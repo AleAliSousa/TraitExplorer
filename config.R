@@ -1,1 +1,1 @@
-DATA_REPO <- "~/Documents/Evo-M1-Trait-Data"
+DATA_REPO <- "/Users/crossmodal/Library/CloudStorage/OneDrive-AllenInstitute/Species/Evo-M1-Trait-Data"
