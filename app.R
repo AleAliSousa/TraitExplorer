@@ -1,3 +1,7 @@
+source("config.R")
+
+repo_root <- DATA_REPO
+
 # https://github.com/AleAliSousa/Evo-M1-Trait-Data
 library(shiny)
 library(DT)
