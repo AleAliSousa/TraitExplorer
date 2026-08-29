@@ -94,7 +94,7 @@ load_merged_datasets <- function(repo_root){
       dir,
       recursive = TRUE,
       full.names = TRUE,
-      pattern = "\\.(csv|tsv|xlsx)$"
+      pattern = "_long\\.csv$"
     )
 
     for(f in files){
@@ -136,26 +136,46 @@ load_merged_datasets <- function(repo_root){
         next
 
       dat <- janitor::clean_names(dat)
-
+      
+      # Force everything to character
+      dat <- data.frame(
+        lapply(dat, as.character),
+        stringsAsFactors = FALSE
+      )
+      
       dat$source_dataset <- basename(f)
       dat$source_folder <- basename(dir)
-
+      cat(
+        "Loaded:",
+        basename(f),
+        "\n"
+      )
       datasets[[length(datasets) + 1]] <- dat
     }
   }
 
   if(length(datasets) == 0){
-
-    return(
-      tibble(
-        source_dataset = character(),
-        source_folder = character()
-      )
-    )
+    
+    return(data.frame())
   }
-
-  bind_rows(datasets)
-}
+  
+  merged <- dplyr::bind_rows(
+    lapply(
+      datasets,
+      function(x){
+        
+        x[] <- lapply(x, as.character)
+        
+        as.data.frame(
+          x,
+          stringsAsFactors = FALSE
+        )
+      }
+    )
+  )
+  
+  return(merged)
+}  
 
 # --------------------------------------------------
 # LOAD DATA
@@ -164,7 +184,13 @@ load_merged_datasets <- function(repo_root){
 index_tbl <- build_index(repo_root)
 
 merged_data <- load_merged_datasets(repo_root)
-
+cat(
+  "\nMerged rows:",
+  nrow(merged_data),
+  "\nMerged columns:",
+  ncol(merged_data),
+  "\n\n"
+)
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
@@ -333,53 +359,53 @@ server <- function(input, output, session){
   })
 
   trait_results <- reactive({
-
+    
+    req(merged_data)
+    
     if(
       is.null(input$trait_search) ||
-      input$trait_search == ""
+      trimws(input$trait_search) == ""
     ){
-
-      return(
-        merged_data[
-          0:min(0, nrow(merged_data)),
-        ]
-      )
+      return(head(merged_data, 100))
     }
-
-    query <- tolower(
-      input$trait_search
-    )
-
+    
+    query <- tolower(trimws(input$trait_search))
+    
     keep <- apply(
       merged_data,
       1,
       function(x){
-
+        
+        values <- tolower(
+          as.character(x)
+        )
+        
         any(
           grepl(
             query,
-            tolower(
-              as.character(x)
-            ),
+            values,
             fixed = TRUE
           ),
           na.rm = TRUE
         )
       }
     )
-
-    merged_data[keep, ]
+    
+    merged_data[keep, , drop = FALSE]
   })
 
   output$trait_table <- renderDT({
+    
+    datatable(
+      trait_results(),
+      options = list(
+        pageLength = 25,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
+    
+  })
 
-    trait_results()
-
-  },
-  options = list(
-    pageLength = 25,
-    scrollX = TRUE
-  ))
-}
 
 shinyApp(ui, server)
