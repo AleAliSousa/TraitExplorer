@@ -1,0 +1,5 @@
+Fixes relative to the previous improved package:
+1. Corrected the invalid R escape in the .git/.Rproj.user exclusion regex. This was a startup/parsing failure.
+2. Made config.R loading relative to app.R rather than assuming the current working directory.
+3. Added check_setup.R so package/data-path problems can be diagnosed before launching Shiny.
+4. Kept the existing improved UI/data functions otherwise unchanged.

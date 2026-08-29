@@ -26,7 +26,10 @@ library(janitor)
 # CONFIG
 # --------------------------------------------------
 
-source("config.R")
+app_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+if (is.null(app_file) || !nzchar(app_file)) app_file <- "app.R"
+app_dir <- dirname(normalizePath(app_file, winslash = "/", mustWork = FALSE))
+source(file.path(app_dir, "config.R"))
 
 find_data_repo <- function(configured_path) {
   cloud_candidates <- Sys.glob(
@@ -83,7 +86,7 @@ build_index <- function(repo_root) {
     include.dirs = FALSE
   )
 
-  files <- files[!grepl("(^|/)(\.git|\.Rproj\.user)(/|$)", files)]
+  files <- files[!grepl("(^|/)(\\.git|\\.Rproj\\.user)(/|$)", files)]
 
   out <- tibble(
     full_path = files,
