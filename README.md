@@ -34,3 +34,5 @@ shiny::runApp()
 ```
 
 The app reads the local data repository and does not modify it.
+
+GitHub repository: [https://github.com/AleAliSousa/TraitExplorer](https://github.com/AleAliSousa/TraitExplorer)
