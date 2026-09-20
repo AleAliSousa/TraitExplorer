@@ -30,5 +30,20 @@ if (!length(existing)) {
   quit(status = 1)
 }
 
-cat("Data repository found:\n", normalizePath(existing[[1]], winslash = "/"), "\n")
+found_repo <- normalizePath(existing[[1]], winslash = "/")
+cat("Data repository found:\n", found_repo, "\n")
+
+# Check specimen crosswalk
+spec_file <- file.path(found_repo, "_keys", "specimen_crosswalk", "specimen_crosswalk.csv")
+if (file.exists(spec_file)) {
+  cat("Specimen crosswalk found: OK\n")
+} else {
+  cat("Note: Specimen crosswalk file not found at expected path.\n")
+}
+
+# Check merging directory
+merging_dirs <- list.dirs(found_repo, recursive = FALSE, full.names = TRUE)
+merging_dirs <- merging_dirs[grepl("__merging", basename(merging_dirs), fixed = TRUE)]
+cat("Comparative trait domains found:", length(merging_dirs), "\n")
+
 cat("\nSetup looks OK.\n")
