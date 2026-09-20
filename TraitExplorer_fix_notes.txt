@@ -1,5 +1,12 @@
-Fixes relative to the previous improved package:
-1. Corrected the invalid R escape in the .git/.Rproj.user exclusion regex. This was a startup/parsing failure.
-2. Made config.R loading relative to app.R rather than assuming the current working directory.
-3. Added check_setup.R so package/data-path problems can be diagnosed before launching Shiny.
-4. Kept the existing improved UI/data functions otherwise unchanged.
+Fixes and enhancements:
+1. Fixed critical startup crash in load_merged_datasets caused by assigning metadata columns on empty 0-row dataframes (e.g. volumes_flagged_not_used_select.csv).
+2. Resolved severe performance bottlenecks: replaced recursive raw/intermediate file scanning with canonical domain long merges and vectorized search text generation using do.call(paste, ...) for instant multi-term querying.
+3. Added comprehensive Specimen Search:
+   - Full search across canonical IDs, house names, primary/alternate accessions, collections, taxa, publications, and notes.
+   - Rich filters for Specimen Kind, Species, Holding Collection, Source Study, Match Status, and Taxon Conflict.
+   - Interactive Specimen Inspector with Identity & Taxonomy card, Cross-Study Tracking (one individual across multiple publications), backing Evidence Sources, direct Physical Measurements, and embedded Specimen Dossiers (markdown).
+   - Dedicated Fossil Comparisons view (Kochiyama MRI deformation vs Weaver virtual endocast).
+   - Direct browser for published paper specimen measurement tables (MacLeod 2000, Smaers 2010, de Sousa 2010, Kochiyama 2018, Weaver 2001, Barger 2007, Collins 2016, Armstrong 1979).
+   - Taxon Concepts, Collections, and Evidence Sources reference registries.
+4. Updated check_setup.R to verify the specimen crosswalk and comparative trait domains.
+5. Updated run_app.R to reliably launch the Shiny app.
