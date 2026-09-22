@@ -29,25 +29,32 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 
 ## Files
 
-- `app.R` - Shiny application
-- `config.R` - optional data-repository configuration
-- `check_setup.R` - checks R packages and finds the data repository
+- `app.R` - Shiny application (UI + server)
+- `data_layer.R` - all data access: fetches Evo-M1-Trait-Data from GitHub, caches it locally, builds the tables the app displays. Sourced by both `app.R` and `refresh_cache.R`.
+- `refresh_cache.R` - standalone script (`Rscript refresh_cache.R`) that updates the local GitHub cache without launching Shiny. Run this whenever the data repo has changed and you want the next launch to be instant.
+- `config.R` - optional GitHub repo/branch override
+- `check_setup.R` - checks R packages and GitHub reachability
 - `run_app.R` - launches the app
 
 ## Data location
 
-The app does **not** require the Evo-M1-Trait-Data repository to be inside TraitExplorer.
+TraitExplorer has **no local-repository dependency**. It never reads a checkout of Evo-M1-Trait-Data from disk; every table is fetched over HTTPS from `github.com/AleAliSousa/Evo-M1-Trait-Data` and cached under `TraitExplorer/.gh_cache/` (mirroring the repo's folder layout) purely for speed on repeat launches. Deleting `.gh_cache/` just means the next load re-downloads.
 
-It first uses `TRAIT_DATA_REPO` when set, then searches common local locations including:
-
-`~/Library/CloudStorage/*/Species/Evo-M1-Trait-Data`
-
-To force a location:
+To point at a fork, a different branch, or a private mirror:
 
 ```r
-Sys.setenv(TRAIT_DATA_REPO = "/path/to/Evo-M1-Trait-Data")
+Sys.setenv(TRAIT_DATA_OWNER = "your-org")        # default: AleAliSousa
+Sys.setenv(TRAIT_DATA_REPO_NAME = "your-repo")   # default: Evo-M1-Trait-Data
+Sys.setenv(TRAIT_DATA_BRANCH = "your-branch")    # default: main
 shiny::runApp("/path/to/TraitExplorer")
 ```
+
+(or set the same via `GITHUB_OWNER`/`GITHUB_REPO`/`GITHUB_BRANCH` in `config.R`.)
+
+## Updating
+
+- **In-app**: click "Refresh data from GitHub" at the top of any tab. This re-lists the repo and re-downloads every file the app reads (crosswalks, the per-domain trait tables, specimen notes) -- a few dozen small requests, fast enough to run interactively.
+- **From the command line**: `Rscript refresh_cache.R` does the same thing without starting Shiny -- useful before a demo, or as a scheduled job to keep the cache warm.
 
 ## First test
 
@@ -58,6 +65,6 @@ source("check_setup.R")
 source("run_app.R")
 ```
 
-The app reads the local data repository in read-only mode and does not modify source files.
+`check_setup.R` verifies required packages are installed and that GitHub is reachable (falling back to the last-known cache if not). The app is read-only over the source data either way.
 
 GitHub repository: [https://github.com/AleAliSousa/TraitExplorer](https://github.com/AleAliSousa/TraitExplorer)

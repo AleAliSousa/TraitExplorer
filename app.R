@@ -1,10 +1,13 @@
 # TraitExplorer
 # Shiny interface for exploring the Evo-M1-Trait-Data repository,
 # with first-class specimen tracking and comparative trait search.
+#
+# Data access: TraitExplorer never reads a local Evo-M1-Trait-Data checkout.
+# Every table is fetched from GitHub (see data_layer.R) and cached under
+# .gh_cache/ next to this file. Click "Refresh data from GitHub" in the app,
+# or run `Rscript refresh_cache.R`, to pick up dataset changes.
 
-required_packages <- c(
-  "shiny", "DT", "dplyr", "stringr", "readr", "readxl", "janitor"
-)
+required_packages <- c("shiny", "DT", "dplyr", "stringr")
 
 missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_packages)) {
@@ -19,441 +22,37 @@ library(shiny)
 library(DT)
 library(dplyr)
 library(stringr)
-library(readr)
-library(readxl)
-library(janitor)
 
 # Safe fallback for null coalescence
 `%||%` <- function(x, y) if (is.null(x) || !length(x) || is.na(x)) y else x
-
-# --------------------------------------------------
-# CONFIG & PATH DISCOVERY
-# --------------------------------------------------
 
 app_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
 if (is.null(app_file) || !nzchar(app_file)) app_file <- "app.R"
 app_dir <- dirname(normalizePath(app_file, winslash = "/", mustWork = FALSE))
 config_path <- file.path(app_dir, "config.R")
-if (file.exists(config_path)) {
-  source(config_path)
-} else {
-  DATA_REPO <- Sys.getenv("TRAIT_DATA_REPO", unset = "")
-  GITHUB_DATA_REPO <- "https://github.com/AleAliSousa/Evo-M1-Trait-Data/blob/main"
-}
+if (file.exists(config_path)) source(config_path, local = TRUE)
 
-find_data_repo <- function(configured_path) {
-  cloud_candidates <- Sys.glob(
-    path.expand("~/Library/CloudStorage/*/Species/Evo-M1-Trait-Data")
-  )
-  candidates <- unique(c(
-    configured_path,
-    Sys.getenv("TRAIT_DATA_REPO", unset = ""),
-    cloud_candidates,
-    path.expand("~/Species/Evo-M1-Trait-Data"),
-    file.path(getwd(), "Evo-M1-Trait-Data"),
-    file.path(dirname(getwd()), "Evo-M1-Trait-Data")
-  ))
-  candidates <- candidates[nzchar(candidates)]
-  candidates <- normalizePath(candidates, winslash = "/", mustWork = FALSE)
-  existing <- candidates[dir.exists(candidates)]
-  if (length(existing)) existing[[1]] else NA_character_
-}
-
-repo_root <- find_data_repo(DATA_REPO)
-if (is.na(repo_root)) {
-  stop(
-    paste0(
-      "Trait data repository not found.
-
-",
-      "Set TRAIT_DATA_REPO or edit config.R.
-",
-      "Current configured path: ", DATA_REPO
-    ),
-    call. = FALSE
-  )
-}
-
-GITHUB_BASE_URL <- if (exists("GITHUB_DATA_REPO", inherits = FALSE)) {
-  GITHUB_DATA_REPO
-} else {
-  "https://github.com/AleAliSousa/Evo-M1-Trait-Data/blob/main"
-}
-
-# --------------------------------------------------
-# HELPERS
-# --------------------------------------------------
-
-safe_relative_path <- function(path, root) {
-  path <- normalizePath(path, winslash = "/", mustWork = FALSE)
-  root <- normalizePath(root, winslash = "/", mustWork = FALSE)
-  prefix <- paste0(root, "/")
-  sub(paste0("^", stringr::fixed(prefix)), "", path)
-}
-
-read_data_file <- function(f) {
-  if (!file.exists(f)) return(NULL)
-  ext <- tolower(tools::file_ext(f))
-  tryCatch(
-    switch(
-      ext,
-      csv = read_csv(f, show_col_types = FALSE),
-      tsv = read_tsv(f, show_col_types = FALSE),
-      xls = read_excel(f),
-      xlsx = read_excel(f),
-      NULL
-    ),
-    error = function(e) NULL
-  )
-}
-
-match_terms <- function(values, query) {
-  if (!length(values)) return(logical())
-  terms <- strsplit(trimws(tolower(query)), "[[:space:]]+")[[1]]
-  terms <- terms[nzchar(terms)]
-  if (!length(terms)) return(rep(TRUE, length(values)))
-  Reduce(`&`, lapply(terms, function(term) grepl(term, values, fixed = TRUE)))
-}
-
-# Fast search blob generator
-make_fast_search_blob <- function(df) {
-  if (!nrow(df) || !ncol(df)) return(character())
-  clean_cols <- lapply(df, function(col) {
-    col <- as.character(col)
-    col[is.na(col) | col == "NA"] <- ""
-    col
-  })
-  tolower(do.call(paste, c(clean_cols, sep = " ")))
-}
-
-# --------------------------------------------------
-# REPOSITORY INDEX
-# --------------------------------------------------
-
-build_index <- function(repo_root) {
-  files <- list.files(
-    repo_root,
-    recursive = TRUE,
-    full.names = TRUE,
-    include.dirs = FALSE
-  )
-
-  files <- files[!grepl("(^|/)([.]git|[.]Rproj[.]user)(/|$)", files)]
-
-  tibble(
-    full_path = files,
-    relative_path = vapply(files, safe_relative_path, character(1), root = repo_root)
-  ) %>%
-    mutate(
-      folder = dirname(relative_path),
-      filename = basename(relative_path),
-      extension = tolower(tools::file_ext(filename)),
-      study_folder = vapply(
-        strsplit(relative_path, "/", fixed = TRUE),
-        function(x) if (length(x) >= 2) x[[1]] else "(root)",
-        character(1)
-      ),
-      year = str_extract(study_folder, "(?:19|20)[0-9]{2}"),
-      author = str_replace(study_folder, "_etal.*|__.*", ""),
-      is_paper_folder = !startsWith(study_folder, "__"),
-      size_kb = round(file.info(full_path)$size / 1024, 1),
-      github_url = paste0(GITHUB_BASE_URL, "/", relative_path)
-    )
-}
-
-# --------------------------------------------------
-# SPECIMEN SYSTEM LOADER
-# --------------------------------------------------
-
-load_specimen_system <- function(repo_root) {
-  key_dir <- file.path(repo_root, "_keys", "specimen_crosswalk")
-
-  # 1. Specimen Crosswalk
-  sc_path <- file.path(key_dir, "specimen_crosswalk.csv")
-  spec_crosswalk <- if (file.exists(sc_path)) {
-    read.csv(sc_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 2. Fossil Crosswalk
-  fc_path <- file.path(key_dir, "fossil_specimen_crosswalk.csv")
-  fossil_crosswalk <- if (file.exists(fc_path)) {
-    read.csv(fc_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 3. Specimen Source Registry
-  sr_path <- file.path(key_dir, "specimen_source_registry.csv")
-  spec_sources <- if (file.exists(sr_path)) {
-    read.csv(sr_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 4. Taxon Concept Registry
-  tc_path <- file.path(key_dir, "taxon_concept_registry.csv")
-  taxon_concepts <- if (file.exists(tc_path)) {
-    read.csv(tc_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 5. External Links
-  el_path <- file.path(key_dir, "specimen_external_links.csv")
-  external_links <- if (file.exists(el_path)) {
-    read.csv(el_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 6. Collection Registry
-  cr_path <- file.path(repo_root, "_keys", "collection_registry.csv")
-  collections <- if (file.exists(cr_path)) {
-    read.csv(cr_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 7. Fossil Cerebellum / Brain comparison
-  fcomp_path <- file.path(key_dir, "fossil_specimen_cerebellum_comparison.csv")
-  fossil_comp <- if (file.exists(fcomp_path)) {
-    read.csv(fcomp_path, stringsAsFactors = FALSE, na.strings = c("", "NA"), check.names = FALSE)
-  } else data.frame()
-
-  # 8. Specimen Markdown Documentation & Notes
-  specimen_notes <- list()
-  note_dirs <- c(
-    file.path(repo_root, "____Collections and Specimen notes"),
-    key_dir
-  )
-  for (nd in note_dirs) {
-    if (dir.exists(nd)) {
-      md_files <- list.files(nd, pattern = "[.]md$", full.names = TRUE)
-      for (mf in md_files) {
-        nm <- basename(mf)
-        if (!nm %in% names(specimen_notes)) {
-          specimen_notes[[nm]] <- paste(readLines(mf, warn = FALSE), collapse = "
-")
-        }
-      }
-    }
-  }
-
-  # 9. Published Specimen-level Measurement Tables
-  paper_tables <- list()
-  pt_defs <- list(
-    "MacLeod 2000 (Appendix I - 47 primates)" = file.path(repo_root, "MacLeod__2000", "MacLeod__2000_APPENDIXI.csv"),
-    "Smaers 2010 (Table 1 - Stephan specimens via Frahm)" = file.path(repo_root, "Smaers_etal_2010", "Smaers_etal_2010_Table1_Stephan_specimen_data_via_Frahm.csv"),
-    "de Sousa et al. 2010 (Table 1 - Hominoids)" = file.path(repo_root, "deSousa_etal_2010", "deSousa_etal_2010_Table1.csv"),
-    "Kochiyama et al. 2018 (Fossil Specimens Text)" = file.path(repo_root, "Kochiyama_etal_2018", "Kochiyama_etal_2018_FossilSpecimensText.csv"),
-    "Weaver 2001 (Table A-15 Fossils & Extant)" = file.path(repo_root, "Weaver__2001", "Weaver__2001_TableA-15.csv"),
-    "Barger et al. 2007 (Table 1 - Ape Amygdala)" = file.path(repo_root, "Barger_etal_2007", "Barger_etal_2007_Table1.csv"),
-    "Collins et al. 2016 (Table 1 - Chimpanzee Cortex)" = file.path(repo_root, "Collins_etal_2016", "Collins_etal_2016_Table1.csv"),
-    "Armstrong 1979 (Specimen Crosswalk)" = file.path(repo_root, "Armstrong__1979", "Armstrong__1979_specimen_crosswalk.csv")
-  )
-  for (lbl in names(pt_defs)) {
-    pth <- pt_defs[[lbl]]
-    if (file.exists(pth)) {
-      d <- tryCatch(read.csv(pth, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) NULL)
-      if (!is.null(d) && nrow(d) > 0) {
-        paper_tables[[lbl]] <- d
-      }
-    }
-  }
-
-  # Fast search blob for specimen crosswalk
-  spec_search_blob <- make_fast_search_blob(spec_crosswalk)
-
-  list(
-    crosswalk = spec_crosswalk,
-    fossil_crosswalk = fossil_crosswalk,
-    sources = spec_sources,
-    taxon_concepts = taxon_concepts,
-    external_links = external_links,
-    collections = collections,
-    fossil_comp = fossil_comp,
-    notes = specimen_notes,
-    paper_tables = paper_tables,
-    search_blob = spec_search_blob
-  )
-}
-
-# --------------------------------------------------
-# TRAIT DATA LOADER (HARMONIZED MERGES)
-# --------------------------------------------------
-
-load_trait_data <- function(repo_root) {
-  merge_dirs <- list.dirs(repo_root, recursive = FALSE, full.names = TRUE)
-  merge_dirs <- merge_dirs[grepl("__merging", basename(merge_dirs), fixed = TRUE)]
-
-  domain_tables <- list()
-  combined_list <- list()
-
-  for (dir in merge_dirs) {
-    domain <- sub("^__merging_", "", basename(dir))
-    long_file <- file.path(dir, paste0(domain, "_long.csv"))
-    if (!file.exists(long_file)) {
-      cand <- list.files(dir, pattern = "_long[.]csv$", full.names = TRUE)
-      cand <- cand[!grepl("qa|comparison|dedupe|observations", basename(cand))]
-      if (length(cand)) long_file <- cand[[1]]
-    }
-    if (file.exists(long_file)) {
-      d <- tryCatch(read.csv(long_file, stringsAsFactors = FALSE, check.names = FALSE), error = function(e) NULL)
-      if (!is.null(d) && nrow(d) > 0) {
-        domain_tables[[domain]] <- d
-
-        # Standardize columns for combined cross-domain search
-        sp_col <- grep("^species$", names(d), ignore.case = TRUE, value = TRUE)
-        var_col <- grep("^(variable|measure|standardized_term|canonical_structure)$", names(d), ignore.case = TRUE, value = TRUE)
-        val_col <- grep("^(value|gi|mass_g|gli_pct)$", names(d), ignore.case = TRUE, value = TRUE)
-        unit_col <- grep("^units?$", names(d), ignore.case = TRUE, value = TRUE)
-        src_col <- grep("^(source|teams?|sources)$", names(d), ignore.case = TRUE, value = TRUE)
-
-        comb_df <- data.frame(
-          Domain = domain,
-          Species = if (length(sp_col)) as.character(d[[sp_col[[1]]]]) else "",
-          Variable = if (length(var_col)) as.character(d[[var_col[[1]]]]) else "",
-          Value = if (length(val_col)) as.character(d[[val_col[[1]]]]) else "",
-          Units = if (length(unit_col)) as.character(d[[unit_col[[1]]]]) else "",
-          Source = if (length(src_col)) as.character(d[[src_col[[1]]]]) else "",
-          stringsAsFactors = FALSE
-        )
-        combined_list[[length(combined_list) + 1L]] <- comb_df
-      }
-    }
-  }
-
-  combined_df <- if (length(combined_list)) do.call(rbind, combined_list) else data.frame()
-  combined_search_blob <- make_fast_search_blob(combined_df)
-
-  list(
-    domain_tables = domain_tables,
-    combined = combined_df,
-    search_blob = combined_search_blob
-  )
-}
-
-# --------------------------------------------------
-# SPECIMEN LOOKUP HELPERS
-# --------------------------------------------------
-
-lookup_specimen_measurements <- function(canonical, p_id = NA, alt_ids = NA, name = NA, paper_tables = list()) {
-  res <- list()
-  split_alts <- if (!is.na(alt_ids) && is.character(alt_ids) && nzchar(alt_ids)) {
-    strsplit(alt_ids, "[; ]+")[[1]]
-  } else character()
-  all_ids <- unique(c(canonical, p_id, split_alts, name))
-  all_ids <- all_ids[!is.na(all_ids) & nzchar(all_ids) & all_ids != "NA"]
-  if (!length(all_ids)) return(res)
-
-  # Check MacLeod 2000
-  if ("MacLeod 2000 (Appendix I - 47 primates)" %in% names(paper_tables)) {
-    d <- paper_tables[["MacLeod 2000 (Appendix I - 47 primates)"]]
-    mask <- Reduce(`|`, lapply(all_ids, function(id) {
-      grepl(id, paste(d$primary_identifier, d$specimen_name, d$alternate_identifiers, d$specimen), fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("primary_identifier", "specimen_name", "species", "brain_weight_g", "fixed_volume_cm3", "body_weight_kg", "collection_source", "cause_of_death"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["MacLeod 2000 (Appendix I)"]] <- sub_d
-    }
-  }
-
-  # Check de Sousa et al. 2010
-  if ("de Sousa et al. 2010 (Table 1 - Hominoids)" %in% names(paper_tables)) {
-    d <- paper_tables[["de Sousa et al. 2010 (Table 1 - Hominoids)"]]
-    mask <- Reduce(`|`, lapply(all_ids, function(id) {
-      grepl(id, d$code, fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("code", "species", "collection", "brain_mass_g", "brain_volume_cm3", "left_V1_volume_cm3", "left_LGN_volume_cm3", "neocortex_volume_cm3"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["de Sousa et al. 2010 (Table 1)"]] <- sub_d
-    }
-  }
-
-  # Check Smaers et al. 2010
-  if ("Smaers 2010 (Table 1 - Stephan specimens via Frahm)" %in% names(paper_tables)) {
-    d <- paper_tables[["Smaers 2010 (Table 1 - Stephan specimens via Frahm)"]]
-    mask <- Reduce(`|`, lapply(all_ids, function(id) {
-      grepl(id, paste(d$specimen_key, d$catalogue_number), fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("specimen_key", "species", "catalogue_number", "total_brain_volume_mm3", "neopallium_volume_mm3", "basal_ganglia_volume_mm3"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["Smaers et al. 2010 (Table 1)"]] <- sub_d
-    }
-  }
-
-  # Check Kochiyama et al. 2018
-  if ("Kochiyama et al. 2018 (Fossil Specimens Text)" %in% names(paper_tables)) {
-    d <- paper_tables[["Kochiyama et al. 2018 (Fossil Specimens Text)"]]
-    mask <- Reduce(`|`, lapply(all_ids, function(id) {
-      grepl(id, d$Specimen, fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("Specimen", "Species", "date_mean_yBP", "Cerebrum_Vol.cc", "Cerebellum_Vol.cc", "Cerebellum_Cerebrum_ratio"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["Kochiyama et al. 2018"]] <- sub_d
-    }
-  }
-
-  # Check Weaver 2001
-  if ("Weaver 2001 (Table A-15 Fossils & Extant)" %in% names(paper_tables)) {
-    d <- paper_tables[["Weaver 2001 (Table A-15 Fossils & Extant)"]]
-    clean_ids <- unique(c(all_ids, sub(" [0-9]+$", "", all_ids)))
-    mask <- Reduce(`|`, lapply(clean_ids, function(id) {
-      grepl(id, d$Specimen, fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("Specimen", "Group_label", "CBLM_cc", "BoMass_kg", "BrMass_g"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["Weaver 2001 (Table A-15)"]] <- sub_d
-    }
-  }
-
-  # Check Barger 2007
-  if ("Barger et al. 2007 (Table 1 - Ape Amygdala)" %in% names(paper_tables)) {
-    d <- paper_tables[["Barger et al. 2007 (Table 1 - Ape Amygdala)"]]
-    mask <- Reduce(`|`, lapply(all_ids, function(id) {
-      grepl(id, paste(d$specimen_name, d$specimen_id), fixed = TRUE)
-    }))
-    if (any(mask)) {
-      cols <- intersect(c("specimen_name", "specimen_id", "species", "sex", "age", "amygdala_volume_mm3"), names(d))
-      sub_d <- d[mask, cols, drop = FALSE]
-      res[["Barger et al. 2007 (Table 1)"]] <- sub_d
-    }
-  }
-
-  res
-}
-
-lookup_specimen_dossier <- function(canonical, note_text = "", published_taxon = "", resolved_taxon = "") {
-  blob <- paste(canonical, note_text, published_taxon, resolved_taxon)
-  if (grepl("PONGO", canonical, ignore.case = TRUE) || grepl("Pongo", blob, ignore.case = TRUE)) {
-    return("Pongo_specimen_note.md")
-  }
-  if (grepl("DISCO|5542", canonical, ignore.case = TRUE) || grepl("Disco", blob, ignore.case = TRUE)) {
-    return("Disco_gibbon_specimen_note.md")
-  }
-  if (canonical %in% c("Cro-Magnon 1", "Qafzeh 9", "Skhul 5", "Mladeč 1", "Amud 1", "La Chapelle-aux-Saints 1", "La Ferrassie 1") ||
-      grepl("early Homo sapiens|Neanderthal|fossil hominin", blob, ignore.case = TRUE)) {
-    return("EarlyHomoSapiens_fossil_vs_extant_specimen_note.md")
-  }
-  if (grepl("Kaas|Young|Collins|11_38|Turner", blob, ignore.case = TRUE)) {
-    return("Kaas_Young_Collins_specimen_overlap_note.md")
-  }
-  NULL
-}
+# local = TRUE is load-bearing: Shiny sources app.R into a private per-app
+# environment (not globalenv), so data_layer.R must be sourced into THAT
+# same environment -- otherwise its assignments (CACHE_DIR, GITHUB_OWNER,
+# ...) land in globalenv where app_dir (defined above, in the private env)
+# isn't visible, and CACHE_DIR's `file.path(app_dir, ...)` default errors
+# with "object 'app_dir' not found".
+source(file.path(app_dir, "data_layer.R"), local = TRUE)
 
 # --------------------------------------------------
 # INITIALIZE DATA
 # --------------------------------------------------
 
-index_tbl <- build_index(repo_root)
-specimen_data <- load_specimen_system(repo_root)
-trait_data <- load_trait_data(repo_root)
+initial_data <- load_all_data()
 
 message(
-  "TraitExplorer ready:
-",
-  "  Data root: ", repo_root, "
-",
-  "  Files indexed: ", nrow(index_tbl), "
-",
-  "  Specimen records: ", nrow(specimen_data$crosswalk), "
-",
-  "  Trait records: ", nrow(trait_data$combined), " across ", length(trait_data$domain_tables), " domains"
+  "TraitExplorer ready (GitHub-only: ", GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH, "):\n",
+  "  Cache dir: ", CACHE_DIR, "\n",
+  "  Files indexed: ", nrow(initial_data$index_tbl), "\n",
+  "  Specimen records: ", nrow(initial_data$specimen_data$crosswalk), "\n",
+  "  Trait records: ", nrow(initial_data$trait_data$combined), " across ",
+  length(initial_data$trait_data$domain_tables), " domains"
 )
 
 # --------------------------------------------------
@@ -488,6 +87,17 @@ ui <- fluidPage(
       .nav-tabs > li > a { font-weight: 600; }
       .btn-download { margin-top: 6px; margin-bottom: 6px; }
     "))
+  ),
+
+  fluidRow(
+    column(
+      12,
+      div(
+        style = "display:flex; align-items:center; gap:12px; margin-bottom:12px;",
+        actionButton("refresh_data", "Refresh data from GitHub", class = "btn btn-sm btn-outline-primary"),
+        uiOutput("data_status", inline = TRUE)
+      )
+    )
   ),
 
   tabsetPanel(
@@ -561,7 +171,7 @@ ui <- fluidPage(
               selectInput(
                 "paper_spec_table_select",
                 "Select Specimen Table:",
-                choices = names(specimen_data$paper_tables)
+                choices = names(initial_data$specimen_data$paper_tables)
               ),
               textInput("paper_spec_search", "Search within table:", placeholder = "species, code, measurement..."),
               downloadButton("download_paper_spec_table", "Download table (CSV)", class = "btn btn-sm btn-primary btn-download"),
@@ -614,7 +224,7 @@ ui <- fluidPage(
               selectInput(
                 "dossier_select",
                 "Select Dossier / Note:",
-                choices = names(specimen_data$notes)
+                choices = names(initial_data$specimen_data$notes)
               ),
               p(class = "small-note", "Detailed notes documenting specimen identities, overlaps, taxonomic histories, and data integrity boundaries."),
               width = 3
@@ -644,7 +254,7 @@ ui <- fluidPage(
           selectInput(
             "trait_domain",
             "Domain / Merge",
-            choices = c("All Domains (Combined)", sort(names(trait_data$domain_tables)))
+            choices = c("All Domains (Combined)", sort(names(initial_data$trait_data$domain_tables)))
           ),
           selectInput("trait_column", "Search within", choices = "All fields"),
           numericInput("trait_limit", "Maximum rows", value = 1000, min = 50, max = 50000, step = 50),
@@ -700,8 +310,9 @@ ui <- fluidPage(
       div(style = "max-width: 850px;",
         h3("TraitExplorer"),
         p("Interactive browser for the Evo-M1-Trait-Data comparative trait database and harmonized specimen crosswalk."),
-        p(strong("Local data root: "), repo_root),
-        p(class = "small-note", "The app operates in read-only mode over the local repository; source files are never modified."),
+        p(strong("Data source: "), sprintf("github.com/%s/%s@%s", GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH)),
+        p(class = "small-note", "TraitExplorer reads only from that GitHub repository -- never from a local checkout. Every table is fetched over HTTPS and cached under .gh_cache/ next to the app for speed; it is read-only over the source data."),
+        p(class = "small-note", uiOutput("about_loaded_at", inline = TRUE)),
         hr(),
         h4("Specimen Information Architecture"),
         p("TraitExplorer implements the Evo-M1 specimen identity model resolving two distinct data-integrity problems:"),
@@ -724,35 +335,71 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
 
-  # ---- Specimen Filter Dropdown Population ----
-  sc <- specimen_data$crosswalk
-  if (nrow(sc)) {
-    updateSelectInput(
-      session,
-      "spec_filter_kind",
-      choices = c("All", sort(unique(na.omit(sc$specimen_kind))))
-    )
-    updateSelectInput(
-      session,
-      "spec_filter_taxon",
-      choices = c("All", sort(unique(c(na.omit(sc$resolved_taxon), na.omit(sc$published_taxon)))))
-    )
-    updateSelectInput(
-      session,
-      "spec_filter_collection",
-      choices = c("All", sort(unique(na.omit(sc$collection))))
-    )
-    updateSelectInput(
-      session,
-      "spec_filter_pub",
-      choices = c("All", sort(unique(na.omit(sc$source_publication))))
-    )
-    updateSelectInput(
-      session,
-      "spec_filter_match",
-      choices = c("All", sort(unique(na.omit(sc$match))))
-    )
+  rv <- reactiveValues(
+    index_tbl = initial_data$index_tbl,
+    specimen_data = initial_data$specimen_data,
+    trait_data = initial_data$trait_data,
+    loaded_at = initial_data$loaded_at
+  )
+
+  # Repopulates every dropdown that depends on loaded data. Called once at
+  # startup and again after a refresh, so a data-shape change (a removed
+  # collection, a new domain) is reflected without restarting the app.
+  sync_choices <- function() {
+    if (nrow(rv$specimen_data$crosswalk)) {
+      updateSelectInput(session, "spec_filter_kind",
+        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$specimen_kind)))))
+      updateSelectInput(session, "spec_filter_taxon",
+        choices = c("All", sort(unique(c(na.omit(rv$specimen_data$crosswalk$resolved_taxon), na.omit(rv$specimen_data$crosswalk$published_taxon))))))
+      updateSelectInput(session, "spec_filter_collection",
+        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$collection)))))
+      updateSelectInput(session, "spec_filter_pub",
+        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$source_publication)))))
+      updateSelectInput(session, "spec_filter_match",
+        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$match)))))
+    }
+
+    updateSelectInput(session, "paper_spec_table_select",
+      choices = names(rv$specimen_data$paper_tables))
+    updateSelectInput(session, "dossier_select",
+      choices = names(rv$specimen_data$notes))
+    updateSelectInput(session, "trait_domain",
+      choices = c("All Domains (Combined)", sort(names(rv$trait_data$domain_tables))))
+
+    updateSelectInput(session, "file_extension",
+      choices = c("All", sort(unique(rv$index_tbl$extension[rv$index_tbl$extension != ""]))))
+    updateSelectInput(session, "file_year",
+      choices = c("All", sort(unique(na.omit(rv$index_tbl$year)), decreasing = TRUE)))
   }
+  sync_choices()
+
+  observeEvent(input$refresh_data, {
+    withProgress(message = "Refreshing from GitHub...", {
+      fresh <- load_all_data(force_tree = TRUE, force_content = TRUE)
+      rv$index_tbl <- fresh$index_tbl
+      rv$specimen_data <- fresh$specimen_data
+      rv$trait_data <- fresh$trait_data
+      rv$loaded_at <- fresh$loaded_at
+    })
+    sync_choices()
+  })
+
+  output$data_status <- renderUI({
+    tagList(
+      tags$span(
+        class = "small-note",
+        sprintf("github.com/%s/%s@%s", GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH),
+        " | last loaded: ", format(rv$loaded_at, "%Y-%m-%d %H:%M:%S"),
+        " | ", format(nrow(rv$index_tbl), big.mark = ","), " files, ",
+        format(nrow(rv$specimen_data$crosswalk), big.mark = ","), " specimen records, ",
+        format(nrow(rv$trait_data$combined), big.mark = ","), " trait records"
+      )
+    )
+  })
+
+  output$about_loaded_at <- renderUI({
+    paste0("Last loaded from GitHub: ", format(rv$loaded_at, "%Y-%m-%d %H:%M:%S"))
+  })
 
   observeEvent(input$reset_spec_filters, {
     updateTextInput(session, "specimen_search", value = "")
@@ -766,7 +413,7 @@ server <- function(input, output, session) {
 
   # Filtered specimen crosswalk
   filtered_specimens <- reactive({
-    dat <- sc
+    dat <- rv$specimen_data$crosswalk
     if (!nrow(dat)) return(dat)
 
     if (input$spec_filter_kind != "All") {
@@ -792,8 +439,8 @@ server <- function(input, output, session) {
 
     query <- str_squish(input$specimen_search %||% "")
     if (nzchar(query)) {
-      row_indices <- match(rownames(dat), rownames(sc))
-      sub_blob <- specimen_data$search_blob[row_indices]
+      row_indices <- match(rownames(dat), rownames(rv$specimen_data$crosswalk))
+      sub_blob <- rv$specimen_data$search_blob[row_indices]
       keep <- match_terms(sub_blob, query)
       dat <- dat[keep, , drop = FALSE]
     }
@@ -808,7 +455,7 @@ server <- function(input, output, session) {
       strong(format(nrow(dat), big.mark = ",")),
       " matching specimen records",
       span(paste0(" (representing ", n_unique, " unique canonical individuals)")),
-      if (length(unique(dat$canonical_specimen)) < nrow(sc)) {
+      if (length(unique(dat$canonical_specimen)) < nrow(rv$specimen_data$crosswalk)) {
         span(class = "small-note", " | Select a row in the table to inspect details, cross-study tracking, and measurements.")
       }
     )
@@ -870,20 +517,20 @@ server <- function(input, output, session) {
     }
 
     canon <- sel$canonical_specimen
-    all_recs <- sc[sc$canonical_specimen == canon, , drop = FALSE]
+    all_recs <- rv$specimen_data$crosswalk[rv$specimen_data$crosswalk$canonical_specimen == canon, , drop = FALSE]
 
     # Look up taxon concept
-    tc_row <- specimen_data$taxon_concepts[specimen_data$taxon_concepts$taxon_concept == sel$taxon_concept, , drop = FALSE]
+    tc_row <- rv$specimen_data$taxon_concepts[rv$specimen_data$taxon_concepts$taxon_concept == sel$taxon_concept, , drop = FALSE]
 
     # Look up evidence sources
     ev_ids <- strsplit(sel$evidence_source_ids %||% "", "[; ]+")[[1]]
     ev_ids <- ev_ids[nzchar(ev_ids)]
-    ev_df <- specimen_data$sources[specimen_data$sources$source_id %in% ev_ids, , drop = FALSE]
+    ev_df <- rv$specimen_data$sources[rv$specimen_data$sources$source_id %in% ev_ids, , drop = FALSE]
 
     # Look up physical measurements
     measurements <- lookup_specimen_measurements(
       canon, sel$primary_identifier, sel$alternate_identifiers, sel$specimen_name,
-      paper_tables = specimen_data$paper_tables
+      paper_tables = rv$specimen_data$paper_tables
     )
 
     # Look up related dossier note
@@ -1019,12 +666,12 @@ server <- function(input, output, session) {
           ),
 
           # Inspector Tab 5: Dossier Note
-          if (!is.null(dossier_name) && dossier_name %in% names(specimen_data$notes)) {
+          if (!is.null(dossier_name) && dossier_name %in% names(rv$specimen_data$notes)) {
             tabPanel(
               "Specimen Dossier",
               br(),
               div(class = "dossier-box",
-                shiny::markdown(specimen_data$notes[[dossier_name]])
+                shiny::markdown(rv$specimen_data$notes[[dossier_name]])
               )
             )
           }
@@ -1035,7 +682,7 @@ server <- function(input, output, session) {
 
   # ---- Fossil Comparison Tables ----
   output$fossil_comparison_table <- renderDT({
-    fc <- specimen_data$fossil_comp
+    fc <- rv$specimen_data$fossil_comp
     if (!nrow(fc)) return(datatable(data.frame(Message = "No comparison records found.")))
     datatable(
       fc,
@@ -1049,7 +696,7 @@ server <- function(input, output, session) {
   })
 
   output$fossil_crosswalk_table <- renderDT({
-    fcw <- specimen_data$fossil_crosswalk
+    fcw <- rv$specimen_data$fossil_crosswalk
     if (!nrow(fcw)) return(datatable(data.frame(Message = "No fossil crosswalk records found.")))
     datatable(
       fcw,
@@ -1065,8 +712,8 @@ server <- function(input, output, session) {
   # ---- Published Specimen Tables ----
   selected_paper_table <- reactive({
     tbl_name <- input$paper_spec_table_select
-    if (!tbl_name %in% names(specimen_data$paper_tables)) return(data.frame())
-    dat <- specimen_data$paper_tables[[tbl_name]]
+    if (!tbl_name %in% names(rv$specimen_data$paper_tables)) return(data.frame())
+    dat <- rv$specimen_data$paper_tables[[tbl_name]]
     query <- str_squish(input$paper_spec_search %||% "")
     if (nzchar(query) && nrow(dat)) {
       blob <- make_fast_search_blob(dat)
@@ -1125,7 +772,7 @@ server <- function(input, output, session) {
   # ---- Registries Tables ----
   output$taxon_concepts_table <- renderDT({
     datatable(
-      specimen_data$taxon_concepts,
+      rv$specimen_data$taxon_concepts,
       rownames = FALSE,
       filter = "top",
       options = list(pageLength = 10, scrollX = TRUE)
@@ -1134,7 +781,7 @@ server <- function(input, output, session) {
 
   output$collections_table <- renderDT({
     datatable(
-      specimen_data$collections,
+      rv$specimen_data$collections,
       rownames = FALSE,
       filter = "top",
       options = list(pageLength = 10, scrollX = TRUE)
@@ -1143,7 +790,7 @@ server <- function(input, output, session) {
 
   output$sources_table <- renderDT({
     datatable(
-      specimen_data$sources,
+      rv$specimen_data$sources,
       rownames = FALSE,
       filter = "top",
       options = list(pageLength = 10, scrollX = TRUE)
@@ -1152,19 +799,19 @@ server <- function(input, output, session) {
 
   output$dossier_content <- renderUI({
     d_name <- input$dossier_select
-    if (!d_name %in% names(specimen_data$notes)) {
+    if (!d_name %in% names(rv$specimen_data$notes)) {
       return(p("Selected note not found."))
     }
-    shiny::markdown(specimen_data$notes[[d_name]])
+    shiny::markdown(rv$specimen_data$notes[[d_name]])
   })
 
   # ---- Trait Search Tab ----
   observe({
     dom <- input$trait_domain
     if (dom == "All Domains (Combined)") {
-      cols <- c("All fields", names(trait_data$combined))
-    } else if (dom %in% names(trait_data$domain_tables)) {
-      cols <- c("All fields", names(trait_data$domain_tables[[dom]]))
+      cols <- c("All fields", names(rv$trait_data$combined))
+    } else if (dom %in% names(rv$trait_data$domain_tables)) {
+      cols <- c("All fields", names(rv$trait_data$domain_tables[[dom]]))
     } else {
       cols <- "All fields"
     }
@@ -1181,9 +828,9 @@ server <- function(input, output, session) {
   trait_results <- reactive({
     dom <- input$trait_domain
     dat <- if (dom == "All Domains (Combined)") {
-      trait_data$combined
-    } else if (dom %in% names(trait_data$domain_tables)) {
-      trait_data$domain_tables[[dom]]
+      rv$trait_data$combined
+    } else if (dom %in% names(rv$trait_data$domain_tables)) {
+      rv$trait_data$domain_tables[[dom]]
     } else {
       data.frame()
     }
@@ -1202,7 +849,7 @@ server <- function(input, output, session) {
 
     # Search within specific column or all fields
     if (input$trait_column == "All fields" || !input$trait_column %in% names(dat)) {
-      blob <- if (dom == "All Domains (Combined)") trait_data$search_blob else make_fast_search_blob(dat)
+      blob <- if (dom == "All Domains (Combined)") rv$trait_data$search_blob else make_fast_search_blob(dat)
       keep <- match_terms(blob, query)
     } else {
       col_val <- tolower(ifelse(is.na(dat[[input$trait_column]]), "", as.character(dat[[input$trait_column]])))
@@ -1277,18 +924,6 @@ server <- function(input, output, session) {
   )
 
   # ---- Repository Explorer Tab ----
-  updateSelectInput(
-    session,
-    "file_extension",
-    choices = c("All", sort(unique(index_tbl$extension[index_tbl$extension != ""])))
-  )
-
-  updateSelectInput(
-    session,
-    "file_year",
-    choices = c("All", sort(unique(na.omit(index_tbl$year)), decreasing = TRUE))
-  )
-
   observeEvent(input$reset_file_filters, {
     updateTextInput(session, "file_search", value = "")
     updateSelectInput(session, "file_extension", selected = "All")
@@ -1298,7 +933,7 @@ server <- function(input, output, session) {
   })
 
   filtered_files <- reactive({
-    dat <- index_tbl
+    dat <- rv$index_tbl
 
     if (input$file_extension != "All") {
       dat <- filter(dat, extension == input$file_extension)
@@ -1389,7 +1024,9 @@ server <- function(input, output, session) {
     content = function(file) {
       row <- selected_file()
       if (is.null(row)) stop("Select a file first.", call. = FALSE)
-      ok <- file.copy(row$full_path, file, overwrite = TRUE)
+      cached <- gh_fetch(row$relative_path)
+      if (is.null(cached)) stop("Could not download the selected file from GitHub.", call. = FALSE)
+      ok <- file.copy(cached, file, overwrite = TRUE)
       if (!ok) stop("Could not copy the selected file.", call. = FALSE)
     }
   )
