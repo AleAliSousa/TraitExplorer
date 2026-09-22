@@ -371,7 +371,11 @@ server <- function(input, output, session) {
     updateSelectInput(session, "file_year",
       choices = c("All", sort(unique(na.omit(rv$index_tbl$year)), decreasing = TRUE)))
   }
-  sync_choices()
+  # This first call runs at server startup, before any reactive consumer
+  # (observer/reactive/render) exists -- reading a reactiveValues field
+  # there needs isolate(). The call inside the refresh observeEvent() below
+  # is already inside a reactive consumer and needs no isolate().
+  isolate(sync_choices())
 
   observeEvent(input$refresh_data, {
     withProgress(message = "Refreshing from GitHub...", {
