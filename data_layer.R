@@ -188,7 +188,18 @@ build_index <- function(tree) {
   paths <- gh_blob_paths(tree)
   sizes <- gh_blob_sizes(tree)
 
-  keep <- !grepl("(^|/)([.]git|[.]Rproj[.]user)(/|$)", paths)
+  # Hide git internals, editor/session state, and OS/filesystem junk from the
+  # browsable index -- none of it is comparative trait data. Dotfiles are
+  # excluded by basename generally (matches normal file-browser convention:
+  # .gitignore, .gitattributes, .DS_Store, .Rhistory, .fuse_hidden* -- the
+  # last are FUSE-mounted-filesystem temp files left behind when a program
+  # deletes an open file on a network/cloud-sync mount, arbitrary leftover
+  # bytes never meant to be read); *.RData session dumps are excluded by
+  # extension since they aren't dotfiles.
+  basenames <- basename(paths)
+  keep <- !grepl("(^|/)([.]git|[.]Rproj[.]user)(/|$)", paths) &
+    !startsWith(basenames, ".") &
+    !grepl("[.]RData$", basenames)
   paths <- paths[keep]; sizes <- sizes[keep]
 
   dplyr::tibble(
