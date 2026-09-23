@@ -67,4 +67,13 @@ source("run_app.R")
 
 `check_setup.R` verifies required packages are installed and that GitHub is reachable (falling back to the last-known cache if not). The app is read-only over the source data either way.
 
+## Deploying to the web
+
+TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Because TraitExplorer reads its data straight from GitHub at runtime, deploying only ever uploads the app code (`app.R`, `data_layer.R`, `config.R`) -- a live TraitExplorer always sees current GitHub data with no redeploy needed for a pure data change.
+
+- **macOS** -- double-click **`Deploy_TraitExplorer.command`** in the repo root
+- Or, from a terminal: `Rscript deploy_traitexplorer.R`
+
+First-time setup (once per computer, only for the deploy step): log into shinyapps.io -> Account -> Tokens -> Show -> "Show secret" -> Copy, then paste the copied `rsconnect::setAccountInfo(...)` line into an R console once.
+
 GitHub repository: [https://github.com/AleAliSousa/TraitExplorer](https://github.com/AleAliSousa/TraitExplorer)
