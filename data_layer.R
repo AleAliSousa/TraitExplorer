@@ -226,6 +226,26 @@ load_specimen_system <- function(tree, force = FALSE) {
   collections      <- read_gh_csv("_keys/collection_registry.csv", force)
   fossil_comp      <- read_gh_csv(file.path(key_dir, "fossil_specimen_cerebellum_comparison.csv"), force)
 
+  # Clean collection_group / collection_qualifier -- built by
+  # _keys/build_collection_resolution.R from collection_registry.csv, so the
+  # app never re-derives (or re-drifts) the raw `collection` string's meaning
+  # itself. Joined onto the crosswalk here rather than shipping the raw
+  # string alone: collection_group separates the actual holding collection
+  # from the institute that hosts it (Hirnforschung hosts Stephan/Zilles, it
+  # is not itself a fourth collection) and from the animal's source colony
+  # (Yerkes is where the animal lived, not a holder -- it gets its own YERKES
+  # group and never gets conflated with the Duesseldorf holding collection a
+  # Yerkes-sourced animal's brain actually lives in).
+  collection_resolution <- read_gh_csv("_keys/collection_resolution.csv", force)
+  if (nrow(spec_crosswalk) && nrow(collection_resolution)) {
+    res_idx <- match(spec_crosswalk$collection, collection_resolution$collection)
+    spec_crosswalk$collection_group <- collection_resolution$collection_group[res_idx]
+    spec_crosswalk$collection_qualifier <- collection_resolution$collection_qualifier[res_idx]
+  } else {
+    spec_crosswalk$collection_group <- NA_character_
+    spec_crosswalk$collection_qualifier <- NA_character_
+  }
+
   # Markdown notes: discovered from the GitHub tree listing (folder prefix +
   # .md extension) rather than list.files() on a local directory.
   note_dirs <- c("____Collections and Specimen notes", key_dir)
@@ -252,7 +272,35 @@ load_specimen_system <- function(tree, force = FALSE) {
     "Weaver 2001 (Table A-15 Fossils & Extant)" = "Weaver__2001/Weaver__2001_TableA-15.csv",
     "Barger et al. 2007 (Table 1 - Ape Amygdala)" = "Barger_etal_2007/Barger_etal_2007_Table1.csv",
     "Collins et al. 2016 (Table 1 - Chimpanzee Cortex)" = "Collins_etal_2016/Collins_etal_2016_Table1.csv",
-    "Armstrong 1979 (Specimen Crosswalk)" = "Armstrong__1979/Armstrong__1979_specimen_crosswalk.csv"
+    "Armstrong 1979 (Specimen Crosswalk)" = "Armstrong__1979/Armstrong__1979_specimen_crosswalk.csv",
+    # Fobbs & Johnson 2011 catalogs the NMHM/AFIP-held collections; these are
+    # the primary evidence behind several _keys/collection_registry.csv groups
+    # (JOHNSON_MSU, MEYER_PHIPPS_JHU, CROSBY_UMICH) -- browsing them alongside
+    # the Specimen Explorer's collection_group filter shows exactly what each
+    # resolved group is grounded in.
+    "Fobbs & Johnson 2011 (Table S1a - developmental specimens, diagnostic categories)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS1a.csv",
+    "Fobbs & Johnson 2011 (Table S1b - species/study catalog)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS1b.csv",
+    "Fobbs & Johnson 2011 (Table S2 - stains and sectioning catalog)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS2.csv",
+    "Fobbs & Johnson 2011 (Table S3 - Johnson Michigan State collection)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS3.csv",
+    "Fobbs & Johnson 2011 (Table S4 - Meyer-Phipps collection)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS4.csv",
+    "Fobbs & Johnson 2011 (Table S5a - Huber-Crosby collection)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS5a.csv",
+    "Fobbs & Johnson 2011 (Table S5b - Crosby-Lauer collection)" =
+      "Fobbs_etal_2011/Fobbs_etal_2011_TableS5b.csv",
+    # Zilles et al. 2011 catalogs the Duesseldorf Hirnforschung institute's
+    # three brain collections -- the evidence behind the DUSSELDORF_HIRNFORSCHUNG
+    # group (Stephan/Zilles/Zilles-Amunts share this one building).
+    "Zilles et al. 2011 (Table S1 - Stephan/Zilles collection)" =
+      "Zilles_etal_2011/Zilles_etal_2011_TableS1.csv",
+    "Zilles et al. 2011 (Table S2 - Hirnforschung shared collection)" =
+      "Zilles_etal_2011/Zilles_etal_2011_TableS2.csv",
+    "Zilles et al. 2011 (Table S3 - Zilles/Amunts developmental sub-collection)" =
+      "Zilles_etal_2011/Zilles_etal_2011_TableS3.csv"
   )
   paper_tables <- list()
   for (lbl in names(pt_defs)) {

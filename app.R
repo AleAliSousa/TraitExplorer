@@ -126,7 +126,7 @@ ui <- fluidPage(
               ),
               selectInput("spec_filter_kind", "Specimen Kind", choices = "All"),
               selectInput("spec_filter_taxon", "Resolved Taxon / Species", choices = "All"),
-              selectInput("spec_filter_collection", "Collection", choices = "All"),
+              selectInput("spec_filter_collection", "Collection group", choices = "All"),
               selectInput("spec_filter_pub", "Source Publication", choices = "All"),
               selectInput("spec_filter_match", "Match Status", choices = "All"),
               selectInput("spec_filter_conflict", "Taxon Conflict", choices = c("All", "Has taxon conflict", "No conflict")),
@@ -352,7 +352,7 @@ server <- function(input, output, session) {
       updateSelectInput(session, "spec_filter_taxon",
         choices = c("All", sort(unique(c(na.omit(rv$specimen_data$crosswalk$resolved_taxon), na.omit(rv$specimen_data$crosswalk$published_taxon))))))
       updateSelectInput(session, "spec_filter_collection",
-        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$collection)))))
+        choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$collection_group)))))
       updateSelectInput(session, "spec_filter_pub",
         choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$source_publication)))))
       updateSelectInput(session, "spec_filter_match",
@@ -427,7 +427,7 @@ server <- function(input, output, session) {
       dat <- dat[dat$resolved_taxon == input$spec_filter_taxon | dat$published_taxon == input$spec_filter_taxon, , drop = FALSE]
     }
     if (input$spec_filter_collection != "All") {
-      dat <- dat[dat$collection == input$spec_filter_collection, , drop = FALSE]
+      dat <- dat[dat$collection_group == input$spec_filter_collection, , drop = FALSE]
     }
     if (input$spec_filter_pub != "All") {
       dat <- dat[dat$source_publication == input$spec_filter_pub, , drop = FALSE]
@@ -481,7 +481,9 @@ server <- function(input, output, session) {
         `Published Taxon` = published_taxon,
         `Concept` = taxon_concept,
         `Kind` = specimen_kind,
-        `Collection` = collection,
+        `Collection Group` = collection_group,
+        `Collection (as printed)` = collection,
+        `Origin / Qualifier` = collection_qualifier,
         `Publication` = source_publication,
         `Match` = match,
         `Sex` = sex
@@ -572,7 +574,12 @@ server <- function(input, output, session) {
                 p(span(class = "prop-label", "House / Specimen Name:"), sel$specimen_name %||% "N/A"),
                 p(span(class = "prop-label", "Primary Identifier:"), strong(sel$primary_identifier %||% "N/A")),
                 p(span(class = "prop-label", "Alternate Identifiers:"), sel$alternate_identifiers %||% "None"),
-                p(span(class = "prop-label", "Collection:"), sel$collection %||% "N/A"),
+                p(span(class = "prop-label", "Collection Group:"), strong(sel$collection_group %||% "N/A")),
+                p(span(class = "prop-label", "Collection (as printed):"), sel$collection %||% "N/A"),
+                if (!is.na(sel$collection_qualifier %||% NA) && nzchar(sel$collection_qualifier %||% "")) {
+                  p(span(class = "prop-label", "Origin / Qualifier:"), em(sel$collection_qualifier),
+                    span(class = "small-note", " (e.g. the source colony an animal came from -- not necessarily who holds its brain now)"))
+                },
                 p(span(class = "prop-label", "Sex:"), sel$sex %||% "Not recorded"),
                 p(span(class = "prop-label", "Match Status:"), span(class = if (sel$match == "matched") "badge-matched" else "badge-probable", sel$match %||% "N/A"))
               ),
@@ -608,6 +615,7 @@ server <- function(input, output, session) {
                     `Printed Taxon` = printed_name,
                     `Published Taxon` = published_taxon,
                     `Resolved Taxon` = resolved_taxon,
+                    `Collection Group` = collection_group,
                     Collection = collection,
                     Match = match,
                     Note = note
