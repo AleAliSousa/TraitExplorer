@@ -465,25 +465,39 @@ server <- function(input, output, session) {
     dat <- rv$specimen_data$crosswalk
     if (!nrow(dat)) return(dat)
 
-    if (input$spec_filter_kind != "All") {
-      dat <- dat[dat$specimen_kind == input$spec_filter_kind, , drop = FALSE]
+    # Note: `col %in% x` (not `col == x`) throughout -- `==` against a column
+    # that has NA in OTHER rows returns NA for those rows, and R's row
+    # indexing keeps an NA-indexed row as a spurious all-NA row rather than
+    # dropping it. `%in%` treats NA as simply not matching, which is what a
+    # dropdown filter should do.
+    f_kind <- input$spec_filter_kind %||% "All"
+    if (f_kind != "All") {
+      dat <- dat[dat$specimen_kind %in% f_kind, , drop = FALSE]
     }
-    if (input$spec_filter_taxon != "All") {
-      dat <- dat[dat$resolved_taxon == input$spec_filter_taxon | dat$published_taxon == input$spec_filter_taxon, , drop = FALSE]
+    f_taxon <- input$spec_filter_taxon %||% "All"
+    if (f_taxon != "All") {
+      dat <- dat[dat$resolved_taxon %in% f_taxon | dat$published_taxon %in% f_taxon, , drop = FALSE]
     }
-    if (input$spec_filter_collection != "All") {
-      dat <- dat[dat$collection_group == input$spec_filter_collection, , drop = FALSE]
+    f_coll <- input$spec_filter_collection %||% "All"
+    if (f_coll != "All") {
+      dat <- dat[dat$collection_group %in% f_coll, , drop = FALSE]
     }
-    if (input$spec_filter_pub != "All") {
-      dat <- dat[dat$source_publication == input$spec_filter_pub, , drop = FALSE]
+    f_pub <- input$spec_filter_pub %||% "All"
+    if (f_pub != "All") {
+      dat <- dat[dat$source_publication %in% f_pub, , drop = FALSE]
     }
-    if (input$spec_filter_match != "All") {
-      dat <- dat[dat$match == input$spec_filter_match, , drop = FALSE]
+    f_match <- input$spec_filter_match %||% "All"
+    if (f_match != "All") {
+      dat <- dat[dat$match %in% f_match, , drop = FALSE]
     }
-    if (input$spec_filter_conflict == "Has taxon conflict") {
-      dat <- dat[isTRUE(as.logical(dat$taxon_conflict)), , drop = FALSE]
-    } else if (input$spec_filter_conflict == "No conflict") {
-      dat <- dat[!isTRUE(as.logical(dat$taxon_conflict)), , drop = FALSE]
+    # isTRUE() only ever evaluates a single value; called on a whole column it
+    # silently collapsed to one FALSE for every row, so this filter never
+    # actually filtered. `%in% TRUE` checks each row and treats NA as "no".
+    f_conflict <- input$spec_filter_conflict %||% "All"
+    if (f_conflict == "Has taxon conflict") {
+      dat <- dat[as.logical(dat$taxon_conflict) %in% TRUE, , drop = FALSE]
+    } else if (f_conflict == "No conflict") {
+      dat <- dat[!(as.logical(dat$taxon_conflict) %in% TRUE), , drop = FALSE]
     }
 
     query <- str_squish(input$specimen_search %||% "")
@@ -1055,11 +1069,11 @@ server <- function(input, output, session) {
   filtered_files <- reactive({
     dat <- rv$index_tbl
 
-    if (input$file_extension != "All") {
+    if ((input$file_extension %||% "All") != "All") {
       dat <- filter(dat, extension == input$file_extension)
     }
 
-    if (input$file_year != "All") {
+    if ((input$file_year %||% "All") != "All") {
       dat <- filter(dat, year == input$file_year)
     }
 

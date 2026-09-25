@@ -197,9 +197,13 @@ build_index <- function(tree) {
   # bytes never meant to be read); *.RData session dumps are excluded by
   # extension since they aren't dotfiles.
   basenames <- basename(paths)
+  # Root-level planning/audit notes for maintaining the repo itself -- not
+  # comparative trait data, so they don't belong in a data browser either.
+  internal_docs <- c("APP_PLAN.md", "AUDIT_brain_size_compatibility.md")
   keep <- !grepl("(^|/)([.]git|[.]Rproj[.]user)(/|$)", paths) &
     !startsWith(basenames, ".") &
-    !grepl("[.]RData$", basenames)
+    !grepl("[.]RData$", basenames) &
+    !(paths %in% internal_docs)
   paths <- paths[keep]; sizes <- sizes[keep]
 
   dplyr::tibble(
