@@ -7,7 +7,7 @@
 # .gh_cache/ next to this file. Click "Refresh data from GitHub" in the app,
 # or run `Rscript refresh_cache.R`, to pick up dataset changes.
 
-required_packages <- c("shiny", "DT", "dplyr", "stringr")
+required_packages <- c("shiny", "DT", "dplyr", "stringr", "plotly")
 
 missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_packages)) {
@@ -22,9 +22,21 @@ library(shiny)
 library(DT)
 library(dplyr)
 library(stringr)
+library(plotly)
 
 # Safe fallback for null coalescence
 `%||%` <- function(x, y) if (is.null(x) || !length(x) || is.na(x)) y else x
+
+# A small number of rows in body_ecology / brain_mass carry a bare specimen
+# ID (e.g. "1", "204") in the Species column instead of a taxon name --
+# a data-layer issue upstream, not something to guess-fix here. Drop those
+# tokens from the species picker so they don't clutter the top of the list
+# (numbers sort before letters); the underlying rows are untouched.
+species_choices_from <- function(species_vec) {
+  sp <- unique(species_vec)
+  sp <- sp[!is.na(sp) & nzchar(sp) & !grepl("^[0-9]+$", sp)]
+  sort(sp)
+}
 
 app_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
 if (is.null(app_file) || !nzchar(app_file)) app_file <- "app.R"
@@ -274,7 +286,35 @@ ui <- fluidPage(
     ),
 
     # ========================================================
-    # TAB 3: REPOSITORY EXPLORER
+    # TAB 3: SPECIES DATA COVERAGE
+    # ========================================================
+    tabPanel(
+      "Species Coverage",
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          selectInput(
+            "coverage_species",
+            "Species",
+            choices = c("", species_choices_from(initial_data$trait_data$combined$Species)),
+            selected = ""
+          ),
+          p(class = "small-note",
+            "Counts distinct variables (not records) recorded for this species in each harmonized domain. Species names are as printed in each domain's own merge and are not harmonized across domains -- the same animal under a different spelling in two domains shows up as coverage in only one."),
+          width = 3
+        ),
+        mainPanel(
+          div(class = "status-box", uiOutput("coverage_status")),
+          plotly::plotlyOutput("coverage_pie", height = "420px"),
+          br(),
+          DTOutput("coverage_table"),
+          width = 9
+        )
+      )
+    ),
+
+    # ========================================================
+    # TAB 4: REPOSITORY EXPLORER
     # ========================================================
     tabPanel(
       "Repository Explorer",
@@ -302,7 +342,7 @@ ui <- fluidPage(
     ),
 
     # ========================================================
-    # TAB 4: ABOUT
+    # TAB 5: ABOUT
     # ========================================================
     tabPanel(
       "About",
@@ -370,6 +410,11 @@ server <- function(input, output, session) {
       choices = c("All", sort(unique(rv$index_tbl$extension[rv$index_tbl$extension != ""]))))
     updateSelectInput(session, "file_year",
       choices = c("All", sort(unique(na.omit(rv$index_tbl$year)), decreasing = TRUE)))
+
+    species_choices <- species_choices_from(rv$trait_data$combined$Species)
+    keep_selected <- if (isTRUE(input$coverage_species %in% species_choices)) input$coverage_species else ""
+    updateSelectInput(session, "coverage_species",
+      choices = c("", species_choices), selected = keep_selected)
   }
   # This first call runs at server startup, before any reactive consumer
   # (observer/reactive/render) exists -- reading a reactiveValues field
@@ -819,7 +864,7 @@ server <- function(input, output, session) {
 
   # ---- Trait Search Tab ----
   observe({
-    dom <- input$trait_domain
+    dom <- input$trait_domain %||% "All Domains (Combined)"
     if (dom == "All Domains (Combined)") {
       cols <- c("All fields", names(rv$trait_data$combined))
     } else if (dom %in% names(rv$trait_data$domain_tables)) {
@@ -934,6 +979,69 @@ server <- function(input, output, session) {
     },
     contentType = "text/csv"
   )
+
+  # ---- Species Coverage Tab ----
+  coverage_summary <- reactive({
+    sp <- input$coverage_species
+    combined <- rv$trait_data$combined
+    if (!nzchar(sp %||% "") || !nrow(combined)) return(data.frame())
+    rows <- combined[!is.na(combined$Species) & combined$Species == sp, , drop = FALSE]
+    if (!nrow(rows)) return(data.frame())
+    rows <- rows[!is.na(rows$Domain), , drop = FALSE]
+    if (!nrow(rows)) return(data.frame())
+    rows %>%
+      group_by(Domain) %>%
+      summarise(
+        n_variables = n_distinct(Variable),
+        n_records = n(),
+        variables = paste(sort(unique(Variable)), collapse = "; "),
+        .groups = "drop"
+      ) %>%
+      arrange(desc(n_variables))
+  })
+
+  output$coverage_status <- renderUI({
+    sp <- input$coverage_species
+    if (!nzchar(sp %||% "")) {
+      return(p(class = "small-note",
+                "Select a species to see how many variables are available for it, by domain."))
+    }
+    dat <- coverage_summary()
+    if (!nrow(dat)) {
+      return(div(class = "conflict-alert",
+                  strong("No data found for: "), sp,
+                  ". Try a different spelling -- species names are not harmonized across domains."))
+    }
+    tagList(
+      strong(sp, style = "font-style: italic;"), " -- ",
+      strong(format(sum(dat$n_variables), big.mark = ",")), " distinct variables across ",
+      strong(nrow(dat)), " of ", strong(length(rv$trait_data$domain_tables)), " domains",
+      " (", format(sum(dat$n_records), big.mark = ","), " total records)"
+    )
+  })
+
+  output$coverage_pie <- plotly::renderPlotly({
+    dat <- coverage_summary()
+    if (!nrow(dat)) return(plotly::plotly_empty(type = "pie"))
+    plotly::plot_ly(
+      dat, labels = ~Domain, values = ~n_variables, type = "pie",
+      textinfo = "label+value", hoverinfo = "label+value+percent",
+      marker = list(line = list(color = "#ffffff", width = 1))
+    ) %>%
+      plotly::layout(showlegend = TRUE, margin = list(t = 10, b = 10))
+  })
+
+  output$coverage_table <- renderDT({
+    dat <- coverage_summary()
+    if (!nrow(dat)) return(datatable(data.frame(Message = "No data for this species.")))
+    datatable(
+      dat %>%
+        transmute(Domain = Domain, Variables = n_variables, Records = n_records,
+                  `Variable Names` = variables),
+      rownames = FALSE, filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE)
+    )
+  })
 
   # ---- Repository Explorer Tab ----
   observeEvent(input$reset_file_filters, {
