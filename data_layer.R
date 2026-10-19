@@ -199,7 +199,10 @@ build_index <- function(tree) {
   basenames <- basename(paths)
   # Root-level planning/audit notes for maintaining the repo itself -- not
   # comparative trait data, so they don't belong in a data browser either.
-  internal_docs <- c("APP_PLAN.md", "AUDIT_brain_size_compatibility.md")
+  # (The audit note is moving from the root to _keys/: done locally on 2026-10-08,
+  # on GitHub once pushed. Both paths are listed so it stays hidden either way.)
+  internal_docs <- c("APP_PLAN.md", "AUDIT_brain_size_compatibility.md",
+                     "_keys/AUDIT_brain_size_compatibility.md")
   keep <- !grepl("(^|/)([.]git|[.]Rproj[.]user)(/|$)", paths) &
     !startsWith(basenames, ".") &
     !grepl("[.]RData$", basenames) &
