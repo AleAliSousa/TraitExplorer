@@ -17,10 +17,23 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 - **Published Specimen Tables**: Direct browsing and export of curated specimen tables (MacLeod 2000, Smaers 2010, de Sousa 2010, Kochiyama 2018, Weaver 2001, Barger 2007, Collins 2016, Armstrong 1979).
 - **Taxon Concepts & Registries**: Reference tables for taxon concepts (`taxon_concept_registry.csv`), collections (`collection_registry.csv`), and evidence sources.
 
+### 0. Start Here
+- Landing tab with live counts (trait values, species, domains, specimens tracked, brain-region concepts, files) and three one-click worked examples (gibbon *Disco*; chimpanzee cerebellum volume; mouse CMRgl vs neuron number) that jump to the right tab with the inputs filled in.
+
+### 1b. Specimen identity: species-level accepted name
+- Every crosswalk row carries `accepted_name` (species-level, from `_keys/specimen_crosswalk/specimen_taxon_resolution.csv`) next to the verbatim `resolved_taxon`. The Species filter and the inspector use it, so *Rattus norwegicus* / *Rattus norvegicus* or *Felis domestica* / *Felis catus* are one entry. Under-review labels are flagged `needs_review`.
+- Dossier routing now covers every note present upstream (including the green monkey and Sherwood/Karl notes) and falls back to scanning note text for the specimen's id or house name.
+
 ### 2. Comparative Trait Search
 - Instant multi-term AND searching across 16 compiled domains (Volumes, Cell Counts, Brain Mass, Body & Ecology, Behaviour, Cortical Layers, Endocranial Volume, Sensory, Sleep, etc.).
 - Domain selector to search across all domains or focus on a specific merge.
 - Export results as CSV.
+
+### 2b. Region Comparison (new)
+- Pairs two different kinds of measurement on the **same brain regions in the same species** -- e.g. mouse regional glucose metabolic rate (CMR domain) against regional neuron numbers (cell-count domain) -- and fits an OLS line (log-log by default) with Pearson/Spearman statistics. Points are brain regions. A second mode makes points species for one region.
+- Regions from different domains are matched through two upstream keys: `_keys/variable_domain.csv` (variable label -> canonical structure, measure, unit) and `_keys/anatomy_crosswalk.csv` (domain term -> concept, `direct` / `proxy`). Structures with no crosswalk row pair only on an identical name and are labelled `own name`. Every pairing shows its link class and sources; unpaired regions are listed so a missing crosswalk row is visible, not silent.
+- Covers: cell counts, volumes, brain-part weights, cerebral metabolic rate, GLI, cortical areas, cell morphology, M1 cortical layers. Download the paired table as CSV.
+- Species names in Trait Search / Species Coverage / Region Comparison are harmonised through `_keys/species_display_aliases.csv`; pickers show common names from `_keys/species_cohorts.csv` where known.
 
 ### 3. Repository Explorer
 - Browse and search repository files by study, author, file type, and year.
@@ -50,6 +63,17 @@ shiny::runApp("/path/to/TraitExplorer")
 ```
 
 (or set the same via `GITHUB_OWNER`/`GITHUB_REPO`/`GITHUB_BRANCH` in `config.R`.)
+
+## Previewing un-pushed data (optional)
+
+Set `TRAIT_DATA_LOCAL_DIR` to a local checkout of Evo-M1-Trait-Data to run the app against files that are not yet on GitHub (e.g. a crosswalk edit you want to see before committing):
+
+```r
+Sys.setenv(TRAIT_DATA_LOCAL_DIR = "/path/to/Evo-M1-Trait-Data")
+shiny::runApp("/path/to/TraitExplorer")
+```
+
+The Start Here tab shows a "PREVIEWING LOCAL CHECKOUT" banner in this mode. The app still writes nothing into that folder. Unset the variable (or start a fresh R session) to go back to GitHub.
 
 ## Updating
 

@@ -10,3 +10,11 @@ Fixes and enhancements:
    - Taxon Concepts, Collections, and Evidence Sources reference registries.
 4. Updated check_setup.R to verify the specimen crosswalk and comparative trait domains.
 5. Updated run_app.R to reliably launch the Shiny app.
+
+2026-10-31:
+6. Start Here tab (counts + three worked-example buttons), home cards, clearer one-line tab guide.
+7. Specimen identity: accepted_name / taxon_resolution_basis joined from the new upstream key _keys/specimen_crosswalk/specimen_taxon_resolution.csv; Species filter and inspector use it. Upstream, 63 resolved_taxon strings (378 rows) were rewritten in specimen_crosswalk.csv: 40 nomenclature, 19 spelling, 3 genus-only labels normalised to "Genus sp.", 1 common name; 6 strings remain status=review (Cebus 5, Emys melageris, Ichthyomyzon unicolor, Mustela canis, Natalus micropus, Tupaia (?)). Per-row changelog in _keys/specimen_crosswalk/audit/.
+8. Dossier routing generalised to all notes present (green monkey, Sherwood/Karl) with a text-scan fallback; Disco study list, green monkey comparison and the resolution key added to Published Specimen Tables.
+9. New Region Comparison tab: region-level table built in data_layer.R (build_region_table) from cellcounts, volumes, weights, CMR, GLI, cortical_areas, cell_morphology, cortical_layers via _keys/variable_domain.csv + _keys/anatomy_crosswalk.csv (47 crosswalk rows added upstream). Within-species (points = regions) and across-species (points = species) modes, OLS + Pearson/Spearman, link-class colouring, unpaired list, CSV download.
+10. Species names harmonised through _keys/species_display_aliases.csv in the combined trait table; pickers show common names (species_cohorts.csv).
+11. Optional TRAIT_DATA_LOCAL_DIR preview mode for un-pushed data; check_setup.R now requires plotly.

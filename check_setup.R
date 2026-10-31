@@ -7,7 +7,7 @@
 
 cat("Checking TraitExplorer setup...\n\n")
 
-required_packages <- c("shiny", "DT", "dplyr", "stringr", "readr", "readxl", "httr", "jsonlite")
+required_packages <- c("shiny", "DT", "dplyr", "stringr", "plotly", "readr", "readxl", "httr", "jsonlite")
 missing <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 
 if (length(missing)) {

@@ -60,6 +60,28 @@ dir.create(CACHE_DIR, recursive = TRUE, showWarnings = FALSE)
 
 gh_ua <- httr::user_agent("TraitExplorer (https://github.com/AleAliSousa/TraitExplorer)")
 
+# OPT-IN preview of a local Evo-M1-Trait-Data checkout. Off by default: the
+# app's source of truth stays GitHub. Set TRAIT_DATA_LOCAL_DIR to the folder
+# of a local checkout (e.g. the OneDrive copy) to preview data edits BEFORE
+# they are pushed -- the tree listing is built from the folder and every
+# fetch reads the local file. Nothing is written into that folder.
+LOCAL_REPO_DIR <- Sys.getenv("TRAIT_DATA_LOCAL_DIR", unset = "")
+USING_LOCAL_REPO <- nzchar(LOCAL_REPO_DIR) && dir.exists(LOCAL_REPO_DIR)
+if (nzchar(LOCAL_REPO_DIR) && !USING_LOCAL_REPO) {
+  message("TRAIT_DATA_LOCAL_DIR is set but does not exist (", LOCAL_REPO_DIR, "); falling back to GitHub.")
+}
+
+local_list_tree <- function() {
+  files <- list.files(LOCAL_REPO_DIR, recursive = TRUE, all.files = FALSE, full.names = FALSE)
+  files <- files[!grepl("(^|/)[.]git(/|$)", files)]
+  sizes <- file.info(file.path(LOCAL_REPO_DIR, files))$size
+  list(
+    sha = "local",
+    tree = Map(function(p, s) list(path = p, type = "blob", size = s), files, sizes),
+    truncated = FALSE
+  )
+}
+
 # --------------------------------------------------
 # GITHUB ACCESS
 # --------------------------------------------------
@@ -69,6 +91,7 @@ gh_ua <- httr::user_agent("TraitExplorer (https://github.com/AleAliSousa/TraitEx
 # fallback if GitHub is briefly unreachable, so a network hiccup degrades to
 # "last known state" rather than a crash.
 gh_list_tree <- function(force = FALSE) {
+  if (USING_LOCAL_REPO) return(local_list_tree())
   cache_file <- file.path(CACHE_DIR, "_tree.json")
 
   if (!force && file.exists(cache_file)) {
@@ -118,6 +141,10 @@ gh_blob_sizes <- function(tree) {
 # cache entry is served if a forced re-fetch fails, same fallback logic as
 # gh_list_tree().
 gh_fetch <- function(rel_path, force = FALSE) {
+  if (USING_LOCAL_REPO) {
+    p <- file.path(LOCAL_REPO_DIR, rel_path)
+    return(if (file.exists(p)) p else NULL)
+  }
   local_path <- file.path(CACHE_DIR, rel_path)
   if (!force && file.exists(local_path)) return(local_path)
 
@@ -264,6 +291,39 @@ load_specimen_system <- function(tree, force = FALSE) {
     spec_crosswalk$collection_qualifier <- NA_character_
   }
 
+  # Species-level accepted name for every resolved_taxon string, from
+  # _keys/specimen_crosswalk/specimen_taxon_resolution.csv (built 2026-10-31).
+  # resolved_taxon is kept verbatim (it may legitimately be a trinomial such
+  # as Gorilla beringei graueri, or a genus-only label); accepted_name is the
+  # species_reference name the rest of the database joins on, so the Species
+  # filter and the cross-domain tabs group one animal under one name. Rows
+  # whose resolution is still under review (status = review) keep their
+  # resolved_taxon string as accepted_name -- so they stay selectable -- and
+  # are tagged basis = "needs_review" so the inspector says so.
+  taxon_resolution <- read_gh_csv(file.path(key_dir, "specimen_taxon_resolution.csv"), force)
+  if (nrow(spec_crosswalk)) {
+    if (nrow(taxon_resolution)) {
+      res_idx <- match(spec_crosswalk$resolved_taxon, taxon_resolution$resolved_taxon)
+      in_key <- !is.na(res_idx)
+      resolved_ok <- in_key & taxon_resolution$status[res_idx] %in% "resolved"
+      spec_crosswalk$accepted_name <- NA_character_
+      spec_crosswalk$taxon_resolution_basis <- NA_character_
+      spec_crosswalk$accepted_name[resolved_ok] <- taxon_resolution$accepted_name[res_idx[resolved_ok]]
+      spec_crosswalk$taxon_resolution_basis[resolved_ok] <- taxon_resolution$basis[res_idx[resolved_ok]]
+      review <- in_key & !resolved_ok
+      spec_crosswalk$accepted_name[review] <- spec_crosswalk$resolved_taxon[review]
+      spec_crosswalk$taxon_resolution_basis[review] <- "needs_review"
+      # Anything the key does not cover (a new upstream row) falls back to
+      # resolved_taxon itself so it is never silently dropped from the filter.
+      miss <- !in_key & !is.na(spec_crosswalk$resolved_taxon)
+      spec_crosswalk$accepted_name[miss] <- spec_crosswalk$resolved_taxon[miss]
+      spec_crosswalk$taxon_resolution_basis[miss] <- "not in resolution key"
+    } else {
+      spec_crosswalk$accepted_name <- spec_crosswalk$resolved_taxon
+      spec_crosswalk$taxon_resolution_basis <- NA_character_
+    }
+  }
+
   # Markdown notes: discovered from the GitHub tree listing (folder prefix +
   # .md extension) rather than list.files() on a local directory.
   note_dirs <- c("____Collections and Specimen notes", key_dir)
@@ -318,7 +378,15 @@ load_specimen_system <- function(tree, force = FALSE) {
     "Zilles et al. 2011 (Table S2 - Hirnforschung shared collection)" =
       "Zilles_etal_2011/Zilles_etal_2011_TableS2.csv",
     "Zilles et al. 2011 (Table S3 - Zilles/Amunts developmental sub-collection)" =
-      "Zilles_etal_2011/Zilles_etal_2011_TableS3.csv"
+      "Zilles_etal_2011/Zilles_etal_2011_TableS3.csv",
+    # Case tables kept next to the crosswalk: which studies used the gibbon
+    # Disco, and the Glendenning-vs-Nudo green monkey (FSU) value comparison.
+    "Disco (gibbon GPZ-5542) - public study list" =
+      file.path(key_dir, "Disco_study_list_public.csv"),
+    "Green monkey FSU - Glendenning vs Nudo value comparison" =
+      file.path(key_dir, "Green_monkey_FSU_glendenning_vs_nudo.csv"),
+    "Specimen taxon resolution key (resolved_taxon -> accepted_name)" =
+      file.path(key_dir, "specimen_taxon_resolution.csv")
   )
   paper_tables <- list()
   for (lbl in names(pt_defs)) {
@@ -333,6 +401,7 @@ load_specimen_system <- function(tree, force = FALSE) {
     fossil_crosswalk = fossil_crosswalk,
     sources = spec_sources,
     taxon_concepts = taxon_concepts,
+    taxon_resolution = taxon_resolution,
     external_links = external_links,
     collections = collections,
     fossil_comp = fossil_comp,
@@ -394,12 +463,33 @@ load_trait_data <- function(tree, force = FALSE) {
   }
 
   combined_df <- if (length(combined_list)) do.call(rbind, combined_list) else data.frame()
+
+  # Harmonised species name next to the printed one, so the Species filter,
+  # Species Coverage and the Region Comparison agree on what one species is.
+  species_keys <- load_species_keys(force)
+  if (nrow(combined_df)) {
+    combined_df$Species_printed <- combined_df$Species
+    combined_df$Species <- harmonize_species(combined_df$Species, species_keys)
+    combined_df <- combined_df[, c("Domain", "Species", "Variable", "Value", "Units", "Source", "Species_printed")]
+  }
   combined_search_blob <- make_fast_search_blob(combined_df)
+
+  anatomy_keys <- load_anatomy_keys(force)
+  region_tbl <- tryCatch(
+    build_region_table(domain_tables, anatomy_keys, species_keys),
+    error = function(e) {
+      message("Region table could not be built: ", conditionMessage(e))
+      data.frame()
+    }
+  )
 
   list(
     domain_tables = domain_tables,
     combined = combined_df,
-    search_blob = combined_search_blob
+    search_blob = combined_search_blob,
+    species_keys = species_keys,
+    anatomy_keys = anatomy_keys,
+    region = region_tbl
   )
 }
 
@@ -476,22 +566,246 @@ lookup_specimen_measurements <- function(canonical, p_id = NA, alt_ids = NA, nam
   res
 }
 
-lookup_specimen_dossier <- function(canonical, note_text = "", published_taxon = "", resolved_taxon = "") {
+# Which specimen note (dossier) is relevant to a crosswalk row. Two passes:
+# (1) a small set of hand-written routing rules for the well-known cases;
+# (2) a generic fallback that scans every note's text for the row's canonical
+# id, primary identifier, or house name -- so a note added upstream (e.g. the
+# green monkey or Sherwood/Karl notes) is surfaced without an app change.
+# `notes` is the named list from load_specimen_system(); only notes that
+# actually exist are ever returned.
+lookup_specimen_dossier <- function(canonical, note_text = "", published_taxon = "", resolved_taxon = "",
+                                    primary_id = "", specimen_name = "", notes = list()) {
+  available <- names(notes)
+  pick <- function(nm) if (!length(available) || nm %in% available) nm else NULL
   blob <- paste(canonical, note_text, published_taxon, resolved_taxon)
+  hit <- NULL
   if (grepl("PONGO", canonical, ignore.case = TRUE) || grepl("Pongo", blob, ignore.case = TRUE)) {
-    return("Pongo_specimen_note.md")
-  }
-  if (grepl("DISCO|5542", canonical, ignore.case = TRUE) || grepl("Disco", blob, ignore.case = TRUE)) {
-    return("Disco_gibbon_specimen_note.md")
-  }
-  if (canonical %in% c("Cro-Magnon 1", "Qafzeh 9", "Skhul 5", "Mlade\u010d 1", "Amud 1", "La Chapelle-aux-Saints 1", "La Ferrassie 1") ||
+    hit <- pick("Pongo_specimen_note.md")
+  } else if (grepl("DISCO|5542", canonical, ignore.case = TRUE) || grepl("Disco", blob, ignore.case = TRUE)) {
+    hit <- pick("Disco_gibbon_specimen_note.md")
+  } else if (canonical %in% c("Cro-Magnon 1", "Qafzeh 9", "Skhul 5", "Mlade\u010d 1", "Amud 1", "La Chapelle-aux-Saints 1", "La Ferrassie 1") ||
       grepl("early Homo sapiens|Neanderthal|fossil hominin", blob, ignore.case = TRUE)) {
-    return("EarlyHomoSapiens_fossil_vs_extant_specimen_note.md")
+    hit <- pick("EarlyHomoSapiens_fossil_vs_extant_specimen_note.md")
+  } else if (grepl("Kaas|Young|Collins|11_38|Turner", blob, ignore.case = TRUE)) {
+    hit <- pick("Kaas_Young_Collins_specimen_overlap_note.md")
+  } else if (grepl("Chlorocebus|green monkey|Glendenning|Nudo", blob, ignore.case = TRUE)) {
+    hit <- pick("Green_monkey_FSU_specimen_note.md")
+  } else if (grepl("Sherwood|Karl", blob, ignore.case = TRUE)) {
+    hit <- pick("Sherwood2020_Karl2024_specimen_note.md")
   }
-  if (grepl("Kaas|Young|Collins|11_38|Turner", blob, ignore.case = TRUE)) {
-    return("Kaas_Young_Collins_specimen_overlap_note.md")
+  if (!is.null(hit)) return(hit)
+
+  # Generic pass: any note that mentions this animal's id or name.
+  keys <- unique(c(canonical, primary_id, specimen_name))
+  keys <- keys[!is.na(keys) & nzchar(keys) & keys != "NA" & nchar(keys) >= 4]
+  if (length(keys) && length(notes)) {
+    for (nm in available) {
+      txt <- notes[[nm]]
+      if (any(vapply(keys, function(k) grepl(k, txt, fixed = TRUE), logical(1)))) return(nm)
+    }
   }
   NULL
+}
+
+# --------------------------------------------------
+# SPECIES NAME HARMONIZATION (shared keys)
+# --------------------------------------------------
+
+# Builds one lookup: printed/variant species string -> accepted_name, from
+# _keys/species_display_aliases.csv (variant -> canonical) plus the
+# specimen_taxon_resolution key. Everything not covered maps to itself.
+# Also returns the common-name table from _keys/species_cohorts.csv, used
+# only for display ("Mus musculus (House mouse)") -- never for joining.
+load_species_keys <- function(force = FALSE) {
+  aliases   <- read_gh_csv("_keys/species_display_aliases.csv", force)
+  cohorts   <- read_gh_csv("_keys/species_cohorts.csv", force)
+  alias_map <- if (nrow(aliases) && all(c("variant", "canonical") %in% names(aliases))) {
+    stats::setNames(as.character(aliases$canonical), as.character(aliases$variant))
+  } else character()
+  common <- if (nrow(cohorts) && all(c("species_sci", "common_name") %in% names(cohorts))) {
+    cohorts <- cohorts[!is.na(cohorts$species_sci) & !is.na(cohorts$common_name), ]
+    cohorts <- cohorts[!duplicated(cohorts$species_sci), ]
+    stats::setNames(as.character(cohorts$common_name), as.character(cohorts$species_sci))
+  } else character()
+  list(alias_map = alias_map, common_names = common)
+}
+
+harmonize_species <- function(x, species_keys) {
+  x <- as.character(x)
+  out <- x
+  if (length(species_keys$alias_map)) {
+    hit <- match(x, names(species_keys$alias_map))
+    out[!is.na(hit)] <- unname(species_keys$alias_map[hit[!is.na(hit)]])
+  }
+  out
+}
+
+# "Mus musculus (House mouse)" when a common name is known, else the binomial.
+species_display_label <- function(x, species_keys) {
+  cn <- species_keys$common_names[x]
+  ifelse(is.na(cn), x, paste0(x, " (", cn, ")"))
+}
+
+# --------------------------------------------------
+# REGION-LEVEL TABLE (cross-domain, within-species comparisons)
+# --------------------------------------------------
+
+# One long table with one row per (species, domain, brain structure, measure)
+# so that two different kinds of measurement of the SAME structures in the
+# SAME species can be paired -- e.g. mouse regional glucose metabolism (CMR)
+# against mouse regional neuron numbers (cell counts). Structure names are
+# harmonised through two upstream keys:
+#   _keys/variable_domain.csv   label -> canonical_structure / Measure / Unit
+#   _keys/anatomy_crosswalk.csv (domain, term) -> concept, link_class
+# A structure with no crosswalk row keeps its own name as the concept, so
+# domains that already spell a structure identically still pair up; the
+# `link_class` column tells the user whether a pairing is 'direct',
+# 'proxy' (overlapping / containing definitions) or 'own name' (unreviewed).
+load_anatomy_keys <- function(force = FALSE) {
+  list(
+    variable_domain   = read_gh_csv("_keys/variable_domain.csv", force),
+    anatomy_crosswalk = read_gh_csv("_keys/anatomy_crosswalk.csv", force),
+    variable_defs     = read_gh_csv("_keys/variable_definitions.csv", force)
+  )
+}
+
+build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
+  vd <- anatomy_keys$variable_domain
+  ax <- anatomy_keys$anatomy_crosswalk
+  num <- function(v) suppressWarnings(as.numeric(as.character(v)))
+
+  # label -> (canonical_structure, Measure, Unit) within one variable_domain dataset
+  vd_lookup <- function(dataset_name, labels) {
+    if (!nrow(vd)) return(data.frame(structure = NA_character_, measure = NA_character_, unit = NA_character_)[rep(1, length(labels)), ])
+    sub <- vd[vd$dataset %in% dataset_name, ]
+    sub <- sub[!duplicated(sub$label), ]
+    i <- match(labels, sub$label)
+    data.frame(structure = sub$canonical_structure[i], measure = sub$Measure[i], unit = sub$Unit[i], stringsAsFactors = FALSE)
+  }
+
+  # Species name: the merge's own accepted_name column where it exists (the
+  # upstream resolver has already applied the species key), else Species.
+  sp <- function(d) {
+    s <- as.character(d$Species)
+    if ("accepted_name" %in% names(d)) {
+      a <- as.character(d$accepted_name)
+      s <- ifelse(!is.na(a) & nzchar(a), a, s)
+    }
+    s
+  }
+
+  pieces <- list()
+  add_piece <- function(domain, species, structure, term, measure, unit, value, source, n = NA) {
+    if (!length(value)) return(invisible(NULL))
+    pieces[[length(pieces) + 1L]] <<- data.frame(
+      Domain = domain,
+      Species_printed = as.character(species),
+      Structure = as.character(structure),
+      Term = as.character(term),
+      Measure = as.character(measure),
+      Unit = as.character(unit),
+      Value = num(value),
+      Source = as.character(source),
+      n = as.character(n),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  d <- domain_tables[["cellcounts"]]
+  if (!is.null(d) && nrow(d)) {
+    lk <- vd_lookup("Cell counts", d$Variable)
+    add_piece("cellcounts", sp(d), lk$structure, d$Variable, lk$measure, lk$unit, d$Value, d$Source)
+  }
+  d <- domain_tables[["volumes"]]
+  if (!is.null(d) && nrow(d)) {
+    lk <- vd_lookup("Brain-structure volumes", d$Variable)
+    # Structure comes from the label itself (everything before "_Vol.mm3" /
+    # "_Mass.mg"), not from variable_domain's canonical_structure: the key
+    # folds Cerebellum_grey_matter and Cerebellum_white_matter into
+    # "Cerebellum", which would put three different volumes under one
+    # (structure, measure) cell. The label keeps them apart.
+    structure <- sub("_(Vol|Mass)[.][A-Za-z0-9]+$", "", d$Variable)
+    measure <- ifelse(is.na(lk$measure), sub("^.*_((Vol|Mass)[.][A-Za-z0-9]+)$", "\\1", d$Variable), lk$measure)
+    unit <- ifelse(is.na(lk$unit), sub("^.*[.]", "", d$Variable), lk$unit)
+    add_piece("volumes", sp(d), structure, d$Variable, measure, unit, d$Value, d$Sources, d$n_sources)
+  }
+  d <- domain_tables[["cerebral_metabolic_rate"]]
+  if (!is.null(d) && nrow(d)) {
+    src <- if ("Primary_references" %in% names(d)) d$Primary_references else d$Compilations
+    add_piece("CMR", sp(d), d$Region, d$Region, d$Measure, d$Units, d$Value, src, d$n_studies)
+  }
+  d <- domain_tables[["weights"]]
+  if (!is.null(d) && nrow(d) && "canonical_structure" %in% names(d)) {
+    add_piece("weights", sp(d), d$canonical_structure, d$canonical_structure, "Mass.g", "g", d$mass_g, d$source, d$n)
+  }
+  d <- domain_tables[["GLI"]]
+  if (!is.null(d) && nrow(d) && all(c("area_as_published", "stratum", "GLI_pct") %in% names(d))) {
+    add_piece("GLI", sp(d), d$area_as_published, d$area_as_published, paste0("GLI_", d$stratum), "%", d$GLI_pct, d$source, d$n_specimens)
+  }
+  d <- domain_tables[["cortical_areas"]]
+  if (!is.null(d) && nrow(d)) {
+    term <- d$Standardized_Term
+    structure <- sub("_(Surface_Area|Area|Thickness).*$", "", term)
+    measure <- ifelse(grepl("_", term), sub("^[^_]+_", "", term), term)
+    unit <- ifelse(grepl("[.]mm2$", term), "mm2", ifelse(grepl("[.]mm$", term), "mm", ifelse(grepl("pct", term), "%", "count")))
+    add_piece("cortical_areas", sp(d), structure, term, measure, unit, d$value, d$source, d$n)
+  }
+  d <- domain_tables[["cell_morphology"]]
+  if (!is.null(d) && nrow(d) && all(c("region", "measure", "value") %in% names(d))) {
+    meas <- paste(d$measure, ifelse(is.na(d$cell_type), "", d$cell_type), ifelse(is.na(d$layer), "", paste0("L", d$layer)))
+    meas <- trimws(gsub("[[:space:]]+", " ", meas))
+    add_piece("cell_morphology", sp(d), d$region, d$region, meas, d$unit, d$value, d$source, d$n)
+  }
+  d <- domain_tables[["cortical_layers"]]
+  if (!is.null(d) && nrow(d) && all(c("region", "layer", "measure", "value") %in% names(d))) {
+    add_piece("cortical_layers", sp(d), d$region, d$region, paste0(d$measure, " L", d$layer), d$unit, d$value, d$source, d$n_specimens)
+  }
+
+  if (!length(pieces)) return(data.frame())
+  out <- do.call(rbind, pieces)
+  out <- out[!is.na(out$Value) & !is.na(out$Structure) & nzchar(out$Structure), ]
+  out$Species <- harmonize_species(out$Species_printed, species_keys)
+
+  # Concept + link class from the anatomy crosswalk. Domain names in the
+  # crosswalk: volumes, cellcounts, CMR, weights, cortical_areas, GLI,
+  # cortical_layers. A term may link to several concepts (Striatum ->
+  # Striatum / Caudate / Putamen / Basal_ganglia); keep every link as its own
+  # row so each concept sees it, and tag the link class.
+  if (nrow(ax)) {
+    ax_dom <- ax$domain
+    ax_term <- as.character(ax$term)
+    ax_key <- paste(ax_dom, ax_term, sep = "|")
+    # cellcounts / weights / CMR link by structure name; volumes / cortical_areas by variable label
+    row_key_term <- paste(out$Domain, out$Term, sep = "|")
+    row_key_struct <- paste(out$Domain, out$Structure, sep = "|")
+    linked <- list()
+    for (k in seq_len(nrow(ax))) {
+      m <- which(row_key_term == ax_key[k] | row_key_struct == ax_key[k])
+      if (!length(m)) next
+      sub <- out[m, ]
+      sub$Concept <- ax$concept[k]
+      sub$link_class <- ax$link_class[k]
+      sub$link_relation <- ax$relation[k]
+      linked[[length(linked) + 1L]] <- sub
+    }
+    linked_df <- if (length(linked)) do.call(rbind, linked) else out[0, ]
+    has_link <- row_key_term %in% ax_key | row_key_struct %in% ax_key
+    own <- out[!has_link, ]
+    if (nrow(own)) {
+      own$Concept <- own$Structure
+      own$link_class <- "own name"
+      own$link_relation <- "same (name not yet reviewed in anatomy_crosswalk)"
+    }
+    out <- rbind(linked_df, own)
+  } else {
+    out$Concept <- out$Structure
+    out$link_class <- "own name"
+    out$link_relation <- NA_character_
+  }
+  rownames(out) <- NULL
+  # A readable variable label used in the pickers: "CMR: CMRgl (umol/100g/min)"
+  out$VariableKey <- paste0(out$Domain, ": ", out$Measure, ifelse(is.na(out$Unit) | !nzchar(out$Unit), "", paste0(" (", out$Unit, ")")))
+  out
 }
 
 # --------------------------------------------------

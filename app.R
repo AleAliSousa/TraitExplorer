@@ -98,6 +98,8 @@ ui <- fluidPage(
       .dossier-box { max-height: 500px; overflow-y: auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 18px; line-height: 1.5; }
       .nav-tabs > li > a { font-weight: 600; }
       .btn-download { margin-top: 6px; margin-bottom: 6px; }
+      .home-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; min-height: 190px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+      .stat-pill { display: inline-block; background: #eff6ff; color: #1e3a8a; border-radius: 999px; padding: 4px 12px; margin: 3px 6px 3px 0; font-weight: 600; }
     "))
   ),
 
@@ -114,6 +116,51 @@ ui <- fluidPage(
 
   tabsetPanel(
     id = "main_tabs",
+
+    # ========================================================
+    # TAB 0: START HERE (orientation + guided examples)
+    # ========================================================
+    tabPanel(
+      "Start Here",
+      br(),
+      div(style = "max-width: 1000px;",
+        div(class = "status-box",
+          h4("What is in this database right now?", style = "margin-top: 0; font-weight: 700;"),
+          uiOutput("home_counts")
+        ),
+        fluidRow(
+          column(4, div(class = "home-card",
+            h5("Find a specimen", style = "font-weight: 700;"),
+            p(class = "small-note", "One physical brain across several papers, under several names. Search by nickname, catalogue number, collection, or species."),
+            actionButton("ex_specimen", "Example: gibbon 'Disco'", class = "btn btn-sm btn-outline-primary")
+          )),
+          column(4, div(class = "home-card",
+            h5("Search a trait value", style = "font-weight: 700;"),
+            p(class = "small-note", "Every compiled value, every domain, one search box. Type several words to narrow down (all must match)."),
+            actionButton("ex_trait", "Example: chimpanzee cerebellum volume", class = "btn btn-sm btn-outline-primary")
+          )),
+          column(4, div(class = "home-card",
+            h5("Compare brain regions within a species", style = "font-weight: 700;"),
+            p(class = "small-note", "Pair two kinds of measurement on the same brain regions -- e.g. mouse regional glucose metabolism against neuron numbers -- with a regression."),
+            actionButton("ex_region", "Example: mouse CMRgl vs neurons", class = "btn btn-sm btn-outline-primary")
+          ))
+        ),
+        br(),
+        h5("The tabs, in one line each", style = "font-weight: 700;"),
+        tags$ul(
+          tags$li(strong("Specimen Search"), " -- identity of individual brains: who holds them, what each paper called them, which species they resolve to today."),
+          tags$li(strong("Trait Search"), " -- look up compiled species-level values (volumes, cell counts, metabolic rates, behaviour, sleep ...). Click a row to see every field."),
+          tags$li(strong("Species Coverage"), " -- for one species, how much of each domain is filled in."),
+          tags$li(strong("Region Comparison"), " -- within one species, plot one regional measurement against another across brain regions; or for one region, across species."),
+          tags$li(strong("Repository Explorer"), " -- browse the source files behind the numbers and open them on GitHub.")
+        ),
+        div(class = "rule-box",
+          strong("Reading the numbers: "),
+          "Values are compiled species means from the repository's harmonised merges; they may not include every source-level measurement in the repository. ",
+          "Species names are harmonised through the repository's species key; specimen taxa show both the name as resolved for that individual and the species-level accepted name."
+        )
+      )
+    ),
 
     # ========================================================
     # TAB 1: SPECIMEN SEARCH (PRIMARY & NEW)
@@ -293,14 +340,14 @@ ui <- fluidPage(
       br(),
       sidebarLayout(
         sidebarPanel(
-          selectInput(
+          selectizeInput(
             "coverage_species",
             "Species",
-            choices = c("", species_choices_from(initial_data$trait_data$combined$Species)),
-            selected = ""
+            choices = NULL,
+            options = list(placeholder = "Start typing a species or common name", maxOptions = 50)
           ),
           p(class = "small-note",
-            "Counts distinct variables (not records) recorded for this species in each harmonized domain. Species names are as printed in each domain's own merge and are not harmonized across domains -- the same animal under a different spelling in two domains shows up as coverage in only one."),
+            "Counts distinct variables (not records) recorded for this species in each harmonized domain. Species names are harmonised through the repository's species alias key (_keys/species_display_aliases.csv); a spelling that key does not yet cover still appears under its printed form."),
           width = 3
         ),
         mainPanel(
@@ -313,6 +360,50 @@ ui <- fluidPage(
       )
     ),
 
+
+    # ========================================================
+    # TAB 3b: REGION COMPARISON (cross-domain, within species)
+    # ========================================================
+    tabPanel(
+      "Region Comparison",
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          radioButtons("rc_mode", "Points are",
+            choices = c("Brain regions within one species" = "regions", "Species, for one brain region" = "species"),
+            selected = "regions"),
+          conditionalPanel("input.rc_mode == 'regions'",
+            selectizeInput("rc_species", "Species", choices = NULL,
+              options = list(placeholder = "Start typing a species or common name"))
+          ),
+          conditionalPanel("input.rc_mode == 'species'",
+            selectizeInput("rc_region", "Brain region (concept)", choices = NULL,
+              options = list(placeholder = "Start typing a region"))
+          ),
+          selectizeInput("rc_x", "X variable", choices = NULL, options = list(placeholder = "domain: measure (unit)")),
+          selectizeInput("rc_y", "Y variable", choices = NULL, options = list(placeholder = "domain: measure (unit)")),
+          checkboxInput("rc_log", "log10 axes (and log-log regression)", TRUE),
+          checkboxInput("rc_proxy", "Allow proxy links (overlapping / containing structure definitions)", TRUE),
+          checkboxInput("rc_labels", "Label points", TRUE),
+          p(class = "small-note",
+            "Variables are listed only if the selected species (or region) has them in at least two brain regions (or species). ",
+            "Regions from different domains are paired through _keys/anatomy_crosswalk.csv; 'direct' = same structure, 'proxy' = overlapping definition, 'own name' = identical name, not yet reviewed."),
+          hr(),
+          downloadButton("rc_download", "Download paired data (CSV)", class = "btn btn-sm btn-primary btn-download"),
+          width = 3
+        ),
+        mainPanel(
+          div(class = "status-box", uiOutput("rc_status")),
+          plotly::plotlyOutput("rc_plot", height = "520px"),
+          br(),
+          h5("Paired observations", style = "font-weight: 700;"),
+          DTOutput("rc_table"),
+          br(),
+          uiOutput("rc_unpaired"),
+          width = 9
+        )
+      )
+    ),
     # ========================================================
     # TAB 4: REPOSITORY EXPLORER
     # ========================================================
@@ -389,8 +480,11 @@ server <- function(input, output, session) {
     if (nrow(rv$specimen_data$crosswalk)) {
       updateSelectInput(session, "spec_filter_kind",
         choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$specimen_kind)))))
+      # Species choices use the harmonised accepted_name (one animal, one
+      # name: 'Rattus norwegicus' and 'Rattus norvegicus' are the same entry)
+      # plus the published binomials, so an old label can still be chosen.
       updateSelectInput(session, "spec_filter_taxon",
-        choices = c("All", sort(unique(c(na.omit(rv$specimen_data$crosswalk$resolved_taxon), na.omit(rv$specimen_data$crosswalk$published_taxon))))))
+        choices = c("All", sort(unique(c(na.omit(rv$specimen_data$crosswalk$accepted_name), na.omit(rv$specimen_data$crosswalk$resolved_taxon), na.omit(rv$specimen_data$crosswalk$published_taxon))))))
       updateSelectInput(session, "spec_filter_collection",
         choices = c("All", sort(unique(na.omit(rv$specimen_data$crosswalk$collection_group)))))
       updateSelectInput(session, "spec_filter_pub",
@@ -413,8 +507,9 @@ server <- function(input, output, session) {
 
     species_choices <- species_choices_from(rv$trait_data$combined$Species)
     keep_selected <- if (isTRUE(input$coverage_species %in% species_choices)) input$coverage_species else ""
-    updateSelectInput(session, "coverage_species",
-      choices = c("", species_choices), selected = keep_selected)
+    sp_labels <- species_display_label(species_choices, rv$trait_data$species_keys)
+    updateSelectizeInput(session, "coverage_species",
+      choices = c("", stats::setNames(species_choices, sp_labels)), selected = keep_selected, server = TRUE)
   }
   # This first call runs at server startup, before any reactive consumer
   # (observer/reactive/render) exists -- reading a reactiveValues field
@@ -476,7 +571,7 @@ server <- function(input, output, session) {
     }
     f_taxon <- input$spec_filter_taxon %||% "All"
     if (f_taxon != "All") {
-      dat <- dat[dat$resolved_taxon %in% f_taxon | dat$published_taxon %in% f_taxon, , drop = FALSE]
+      dat <- dat[dat$accepted_name %in% f_taxon | dat$resolved_taxon %in% f_taxon | dat$published_taxon %in% f_taxon, , drop = FALSE]
     }
     f_coll <- input$spec_filter_collection %||% "All"
     if (f_coll != "All") {
@@ -536,6 +631,7 @@ server <- function(input, output, session) {
         `Name / Label` = specimen_name,
         `Primary ID` = primary_identifier,
         `Alternate IDs` = alternate_identifiers,
+        `Species (accepted)` = accepted_name,
         `Resolved Taxon` = resolved_taxon,
         `Published Taxon` = published_taxon,
         `Concept` = taxon_concept,
@@ -599,7 +695,11 @@ server <- function(input, output, session) {
     )
 
     # Look up related dossier note
-    dossier_name <- lookup_specimen_dossier(canon, sel$note, sel$published_taxon, sel$resolved_taxon)
+    dossier_name <- lookup_specimen_dossier(
+      canon, sel$note, sel$published_taxon, sel$resolved_taxon,
+      primary_id = sel$primary_identifier, specimen_name = sel$specimen_name,
+      notes = rv$specimen_data$notes
+    )
 
     tagList(
       div(
@@ -644,6 +744,10 @@ server <- function(input, output, session) {
               ),
               div(class = "col-md-6",
                 p(span(class = "prop-label", "Resolved Taxon:"), strong(sel$resolved_taxon %||% "Unresolved", style = "color: #1e3a8a;")),
+                p(span(class = "prop-label", "Species (accepted name):"), strong(sel$accepted_name %||% "Unresolved"),
+                  if (!is.na(sel$taxon_resolution_basis %||% NA) && !(sel$taxon_resolution_basis %in% c("exact", "exact_taxonomy_key"))) {
+                    span(class = "small-note", paste0(" (via ", sel$taxon_resolution_basis, " -- see specimen_taxon_resolution.csv)"))
+                  }),
                 p(span(class = "prop-label", "Published Taxon:"), em(sel$published_taxon %||% "N/A")),
                 p(span(class = "prop-label", "Verbatim Printed Label:"), code(sel$printed_name %||% "N/A")),
                 p(span(class = "prop-label", "Taxon Concept:"), sel$taxon_concept %||% "N/A"),
@@ -1056,6 +1160,307 @@ server <- function(input, output, session) {
       options = list(pageLength = 20, scrollX = TRUE)
     )
   })
+
+
+  # ---- Start Here Tab ----
+  output$home_counts <- renderUI({
+    comb <- rv$trait_data$combined
+    rg <- rv$trait_data$region
+    n_species <- length(species_choices_from(comb$Species))
+    n_dom <- length(rv$trait_data$domain_tables)
+    n_spec <- length(unique(rv$specimen_data$crosswalk$canonical_specimen))
+    n_regions <- if (nrow(rg)) length(unique(rg$Concept)) else 0
+    tagList(
+      span(class = "stat-pill", paste0(format(nrow(comb), big.mark = ","), " trait values")),
+      span(class = "stat-pill", paste0(n_species, " species")),
+      span(class = "stat-pill", paste0(n_dom, " data domains")),
+      span(class = "stat-pill", paste0(format(n_spec, big.mark = ","), " individual specimens tracked")),
+      span(class = "stat-pill", paste0(n_regions, " brain-region concepts")),
+      span(class = "stat-pill", paste0(format(nrow(rv$index_tbl), big.mark = ","), " source files")),
+      p(class = "small-note", style = "margin-top: 8px;",
+        "Source: ", sprintf("github.com/%s/%s@%s", GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH),
+        if (USING_LOCAL_REPO) span(style = "color:#b45309; font-weight:600;", " | PREVIEWING LOCAL CHECKOUT (TRAIT_DATA_LOCAL_DIR) -- not the published GitHub data") else NULL,
+        " | last loaded ", format(rv$loaded_at, "%Y-%m-%d %H:%M"), ". Use 'Refresh data from GitHub' after the repository changes.")
+    )
+  })
+
+  observeEvent(input$ex_specimen, {
+    updateTabsetPanel(session, "main_tabs", selected = "Specimen Search")
+    updateTabsetPanel(session, "specimen_subtabs", selected = "Specimen Explorer")
+    updateTextInput(session, "specimen_search", value = "Disco")
+  })
+  observeEvent(input$ex_trait, {
+    updateTabsetPanel(session, "main_tabs", selected = "Trait Search")
+    updateSelectInput(session, "trait_domain", selected = "All Domains (Combined)")
+    updateTextInput(session, "trait_search", value = "Pan troglodytes Cerebellum_Vol")
+  })
+  observeEvent(input$ex_region, {
+    updateTabsetPanel(session, "main_tabs", selected = "Region Comparison")
+    updateRadioButtons(session, "rc_mode", selected = "regions")
+    rc_pending$species <- "Mus musculus"
+    rc_pending$x <- "CMR: CMRgl (umol/100g/min)"
+    rc_pending$y <- "cellcounts: N.n (count)"
+    updateSelectizeInput(session, "rc_species", selected = "Mus musculus")
+  })
+
+  # ---- Region Comparison Tab ----
+  # Pending selections let the example button set species, X and Y even
+  # though the X/Y choices are only computed once the species is known.
+  rc_pending <- reactiveValues(species = NULL, x = NULL, y = NULL)
+
+  rc_base <- reactive({
+    rg <- rv$trait_data$region
+    if (!nrow(rg)) return(rg)
+    if (!isTRUE(input$rc_proxy)) rg <- rg[rg$link_class != "proxy", , drop = FALSE]
+    rg
+  })
+
+  # Collapse to one value per (Species, Concept, VariableKey): prefer direct
+  # links over proxy over own-name; within the preferred class take the
+  # median of what remains (several sources, or several terms that map to
+  # the same concept) and carry the count.
+  rc_collapsed <- reactive({
+    rg <- rc_base()
+    if (!nrow(rg)) return(rg)
+    rank <- c(direct = 1L, proxy = 2L, `own name` = 3L)
+    rg$link_rank <- rank[rg$link_class]
+    rg$link_rank[is.na(rg$link_rank)] <- 4L
+    rg %>%
+      group_by(Species, Concept, VariableKey) %>%
+      filter(link_rank == min(link_rank)) %>%
+      summarise(
+        Value = stats::median(Value, na.rm = TRUE),
+        n_values = dplyr::n(),
+        Terms = paste(sort(unique(Term)), collapse = "; "),
+        Structures = paste(sort(unique(Structure)), collapse = "; "),
+        link_class = dplyr::first(link_class),
+        link_relation = paste(sort(unique(link_relation)), collapse = "; "),
+        Sources = paste(sort(unique(na.omit(Source))), collapse = " | "),
+        Domain = dplyr::first(Domain),
+        .groups = "drop"
+      )
+  })
+
+  # Populate species / region pickers (species with >= 2 variables that each
+  # cover >= 2 regions are the ones where a within-species plot is possible).
+  observe({
+    cd <- rc_collapsed()
+    if (!nrow(cd)) return()
+    sp_ok <- cd %>%
+      group_by(Species, VariableKey) %>% summarise(n = dplyr::n(), .groups = "drop") %>%
+      filter(n >= 2) %>% group_by(Species) %>% summarise(k = dplyr::n(), .groups = "drop") %>%
+      filter(k >= 2) %>% pull(Species)
+    sp_ok <- species_choices_from(sp_ok)
+    labels <- species_display_label(sp_ok, rv$trait_data$species_keys)
+    sel <- isolate(input$rc_species)
+    if (!is.null(isolate(rc_pending$species))) sel <- isolate(rc_pending$species)
+    if (is.null(sel) || !sel %in% sp_ok) sel <- if ("Mus musculus" %in% sp_ok) "Mus musculus" else sp_ok[1]
+    updateSelectizeInput(session, "rc_species", choices = stats::setNames(sp_ok, labels), selected = sel, server = TRUE)
+
+    rg_ok <- cd %>%
+      group_by(Concept, VariableKey) %>% summarise(n = dplyr::n(), .groups = "drop") %>%
+      filter(n >= 3) %>% group_by(Concept) %>% summarise(k = dplyr::n(), .groups = "drop") %>%
+      filter(k >= 2) %>% pull(Concept) %>% sort()
+    sel_r <- isolate(input$rc_region)
+    if (is.null(sel_r) || !sel_r %in% rg_ok) sel_r <- if ("Cerebellum" %in% rg_ok) "Cerebellum" else rg_ok[1]
+    updateSelectizeInput(session, "rc_region", choices = rg_ok, selected = sel_r, server = TRUE)
+  })
+
+  # Rows in scope for the current mode: one species (points = regions) or
+  # one region concept (points = species).
+  rc_scope <- reactive({
+    cd <- rc_collapsed()
+    if (!nrow(cd)) return(cd)
+    if (identical(input$rc_mode, "species")) {
+      req(input$rc_region)
+      out <- cd[cd$Concept %in% input$rc_region, , drop = FALSE]
+      out$Point <- out$Species
+    } else {
+      req(input$rc_species)
+      out <- cd[cd$Species %in% input$rc_species, , drop = FALSE]
+      out$Point <- out$Concept
+    }
+    out
+  })
+
+  # Variable choices: those with >= 2 points in scope. Keep the current
+  # selection when still valid; apply a pending example selection once.
+  observe({
+    sc <- rc_scope()
+    vars <- if (nrow(sc)) {
+      sc %>% group_by(VariableKey) %>% summarise(n = dplyr::n(), .groups = "drop") %>%
+        filter(n >= 2) %>% arrange(VariableKey)
+    } else data.frame(VariableKey = character(), n = integer())
+    choices <- vars$VariableKey
+    labels <- paste0(vars$VariableKey, "  [", vars$n, " points]")
+    cur_x <- isolate(input$rc_x); cur_y <- isolate(input$rc_y)
+    px <- isolate(rc_pending$x); py <- isolate(rc_pending$y)
+    if (!is.null(px) && px %in% choices) cur_x <- px
+    if (!is.null(py) && py %in% choices) cur_y <- py
+    if (!is.null(px) || !is.null(py) || !is.null(isolate(rc_pending$species))) {
+      rc_pending$x <- NULL; rc_pending$y <- NULL; rc_pending$species <- NULL
+    }
+    if (is.null(cur_x) || !cur_x %in% choices) {
+      pref <- grep("^CMR: CMRgl", choices, value = TRUE)
+      cur_x <- if (length(pref)) pref[1] else choices[1]
+    }
+    if (is.null(cur_y) || !cur_y %in% choices || identical(cur_y, cur_x)) {
+      pref <- grep("^cellcounts: N.n", choices, value = TRUE)
+      cur_y <- if (length(pref) && !identical(pref[1], cur_x)) pref[1] else setdiff(choices, cur_x)[1]
+    }
+    updateSelectizeInput(session, "rc_x", choices = stats::setNames(choices, labels), selected = cur_x)
+    updateSelectizeInput(session, "rc_y", choices = stats::setNames(choices, labels), selected = cur_y)
+  })
+
+  rc_pairs <- reactive({
+    sc <- rc_scope()
+    req(input$rc_x, input$rc_y)
+    if (!nrow(sc)) return(data.frame())
+    x <- sc[sc$VariableKey %in% input$rc_x, , drop = FALSE]
+    y <- sc[sc$VariableKey %in% input$rc_y, , drop = FALSE]
+    if (!nrow(x) || !nrow(y)) return(data.frame())
+    out <- dplyr::inner_join(
+      x %>% transmute(Point, Species, Concept, X = Value, X_structure = Structures, X_terms = Terms, X_link = link_class, X_relation = link_relation, X_n = n_values, X_sources = Sources),
+      y %>% transmute(Point, Y = Value, Y_structure = Structures, Y_terms = Terms, Y_link = link_class, Y_relation = link_relation, Y_n = n_values, Y_sources = Sources),
+      by = "Point"
+    )
+    out <- out[is.finite(out$X) & is.finite(out$Y), , drop = FALSE]
+    if (isTRUE(input$rc_log)) out <- out[out$X > 0 & out$Y > 0, , drop = FALSE]
+    out
+  })
+
+  rc_fit <- reactive({
+    d <- rc_pairs()
+    if (nrow(d) < 3) return(NULL)
+    xx <- if (isTRUE(input$rc_log)) log10(d$X) else d$X
+    yy <- if (isTRUE(input$rc_log)) log10(d$Y) else d$Y
+    fit <- stats::lm(yy ~ xx)
+    sm <- summary(fit)
+    list(
+      fit = fit,
+      n = nrow(d),
+      slope = unname(coef(fit)[2]),
+      intercept = unname(coef(fit)[1]),
+      slope_se = sm$coefficients[2, 2],
+      r2 = sm$r.squared,
+      p = sm$coefficients[2, 4],
+      pearson = suppressWarnings(stats::cor(xx, yy)),
+      spearman = suppressWarnings(stats::cor(d$X, d$Y, method = "spearman"))
+    )
+  })
+
+  output$rc_status <- renderUI({
+    d <- rc_pairs()
+    if (!nrow(rv$trait_data$region)) return(p(class = "small-note", "No region-level data could be built from the loaded domains."))
+    if (is.null(input$rc_x) || is.null(input$rc_y) || !nzchar(input$rc_x %||% "") || !nzchar(input$rc_y %||% "")) {
+      return(p(class = "small-note", "Choose a species (or region) and two variables."))
+    }
+    scope_lbl <- if (identical(input$rc_mode, "species")) paste0("region ", strong(input$rc_region), "; points = species") else tagList("species ", em(input$rc_species), "; points = brain regions")
+    if (!nrow(d)) {
+      return(div(class = "conflict-alert", strong("No brain regions carry both variables"), " for ", scope_lbl,
+        ". Pick another pair, or allow proxy links. The list below shows which regions have only one of the two."))
+    }
+    f <- rc_fit()
+    tagList(
+      strong(nrow(d)), " paired points for ", scope_lbl, ". ",
+      tags$br(),
+      if (!is.null(f)) {
+        scale_lbl <- if (isTRUE(input$rc_log)) "log10-log10" else "linear"
+        span(
+          sprintf("OLS (%s): slope = %.3f +/- %.3f (SE), intercept = %.3f, R\u00b2 = %.3f, p = %.3g. Pearson r = %.3f; Spearman rho = %.3f.",
+                  scale_lbl, f$slope, f$slope_se, f$intercept, f$r2, f$p, f$pearson, f$spearman)
+        )
+      } else span(class = "small-note", "At least 3 paired points are needed for a regression."),
+      tags$br(),
+      span(class = "small-note",
+        "Pairings: ", paste(names(table(paste(d$X_link, "x", d$Y_link))), table(paste(d$X_link, "x", d$Y_link)), sep = " = ", collapse = "; "),
+        ". Values are compiled species means (median where several sources/terms map to one concept); ",
+        "points are not phylogenetically independent in species mode, and regional values within a species share one animal sample -- treat the fit as descriptive.")
+    )
+  })
+
+  output$rc_plot <- plotly::renderPlotly({
+    d <- rc_pairs()
+    if (!nrow(d)) return(plotly::plotly_empty())
+    f <- rc_fit()
+    xlab <- input$rc_x; ylab <- input$rc_y
+    hover <- paste0(
+      "<b>", d$Point, "</b>",
+      if (identical(input$rc_mode, "species")) "" else paste0("<br>Species: ", d$Species),
+      "<br>X: ", signif(d$X, 4), "  [", d$X_structure, "; ", d$X_link, "]",
+      "<br>Y: ", signif(d$Y, 4), "  [", d$Y_structure, "; ", d$Y_link, "]",
+      "<br>X source: ", substr(d$X_sources, 1, 80),
+      "<br>Y source: ", substr(d$Y_sources, 1, 80)
+    )
+    col <- ifelse(d$X_link == "direct" & d$Y_link == "direct", "#1d4ed8", ifelse(d$X_link == "own name" | d$Y_link == "own name", "#6b7280", "#f59e0b"))
+    pl <- plotly::plot_ly(
+      d, x = ~X, y = ~Y, type = "scatter",
+      mode = if (isTRUE(input$rc_labels)) "markers+text" else "markers",
+      text = if (isTRUE(input$rc_labels)) d$Point else NULL, textposition = "top center",
+      textfont = list(size = 10, color = "#374151"),
+      hovertext = hover, hoverinfo = "text",
+      marker = list(size = 10, color = col, line = list(color = "#ffffff", width = 1)),
+      name = "paired points"
+    )
+    if (!is.null(f)) {
+      xs <- seq(min(d$X), max(d$X), length.out = 100)
+      ys <- if (isTRUE(input$rc_log)) 10^(f$intercept + f$slope * log10(xs)) else f$intercept + f$slope * xs
+      pl <- pl %>% plotly::add_trace(x = xs, y = ys, type = "scatter", mode = "lines", inherit = FALSE,
+        line = list(color = "#b91c1c", width = 2), hoverinfo = "skip",
+        name = sprintf("OLS fit (slope %.2f, R\u00b2 %.2f)", f$slope, f$r2))
+    }
+    ax_type <- if (isTRUE(input$rc_log)) "log" else "linear"
+    pl %>% plotly::layout(
+      xaxis = list(title = xlab, type = ax_type),
+      yaxis = list(title = ylab, type = ax_type),
+      legend = list(orientation = "h", y = -0.2),
+      margin = list(t = 20)
+    )
+  })
+
+  output$rc_table <- renderDT({
+    d <- rc_pairs()
+    if (!nrow(d)) return(datatable(data.frame(Message = "No paired observations.")))
+    datatable(
+      d %>% transmute(
+        Point, Species,
+        `X value` = signif(X, 5), `X structure(s)` = X_structure, `X link` = X_link, `X n` = X_n,
+        `Y value` = signif(Y, 5), `Y structure(s)` = Y_structure, `Y link` = Y_link, `Y n` = Y_n,
+        `X sources` = X_sources, `Y sources` = Y_sources
+      ),
+      rownames = FALSE, filter = "top",
+      options = list(pageLength = 15, scrollX = TRUE)
+    )
+  })
+
+  output$rc_unpaired <- renderUI({
+    sc <- rc_scope()
+    if (!nrow(sc) || is.null(input$rc_x) || is.null(input$rc_y)) return(NULL)
+    x_pts <- unique(sc$Point[sc$VariableKey %in% input$rc_x])
+    y_pts <- unique(sc$Point[sc$VariableKey %in% input$rc_y])
+    only_x <- setdiff(x_pts, y_pts); only_y <- setdiff(y_pts, x_pts)
+    if (!length(only_x) && !length(only_y)) return(NULL)
+    tags$details(
+      tags$summary(style = "cursor:pointer; font-weight:600; color:#475569;",
+        sprintf("Unpaired: %d with X only, %d with Y only (click to show)", length(only_x), length(only_y))),
+      if (length(only_x)) p(class = "small-note", strong("X only: "), paste(sort(only_x), collapse = ", ")),
+      if (length(only_y)) p(class = "small-note", strong("Y only: "), paste(sort(only_y), collapse = ", ")),
+      p(class = "small-note", "A structure measured in both domains under names the anatomy crosswalk does not yet link will appear here on both sides; add the link upstream in _keys/anatomy_crosswalk.csv.")
+    )
+  })
+
+  output$rc_download <- downloadHandler(
+    filename = function() {
+      lbl <- if (identical(input$rc_mode, "species")) input$rc_region else input$rc_species
+      paste0("TraitExplorer_RegionComparison_", gsub("[^A-Za-z0-9]+", "_", lbl %||% "data"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv")
+    },
+    content = function(file) {
+      d <- rc_pairs()
+      d$X_variable <- input$rc_x; d$Y_variable <- input$rc_y
+      write.csv(d, file, row.names = FALSE, na = "")
+    },
+    contentType = "text/csv"
+  )
 
   # ---- Repository Explorer Tab ----
   observeEvent(input$reset_file_filters, {
