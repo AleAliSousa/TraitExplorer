@@ -35,6 +35,15 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 - Covers: cell counts, volumes, brain-part weights, cerebral metabolic rate, GLI, cortical areas, cell morphology, M1 cortical layers. Download the paired table as CSV.
 - Species names in Trait Search / Species Coverage / Region Comparison are harmonised through `_keys/species_display_aliases.csv`; pickers show common names from `_keys/species_cohorts.csv` where known.
 
+### 2c. Structure Profile (within a species)
+- Pick a species and a kind of measurement (volume, mass, neuron number or density, CMRgl/CMRO2, blood flow, surface area, ...) to see every structure-level value side by side, on one unit scale (volumes in mm3, masses in g; cellular units kept as published).
+- Optionally express each structure as a % of a reference (e.g. a weighed whole-brain mass; its basis is named) and add up to three comparison species. Two variables for the same structure stay side by side, never averaged.
+
+### 2d. Trait Reconciliation
+- Candidate pairs of variables that look like the same trait from different sources (same structure + measurement + unit + life-stage/sex scope, or the same name once the author-year tag is removed), with shared species, median ratio, % within 1% / 10% and a verdict.
+- Pair detail (species-by-species values and a DIFFERS flag at a tolerance you set) and a Reconciled view (every source per species, a precedence order you choose, first available wins, source of each value named). Decisions in `_keys/variable_canonical.csv` are shown; nothing is pooled or edited.
+- Labels match the Evo-M1 app (`load_harmonized_values()` in `data_layer.R` ports its `load_compiled()`), except that raw trait-table columns are not superseded here, so they can be compared with the merges that replace them.
+
 ### 3. Repository Explorer
 - Browse and search repository files by study, author, file type, and year.
 - Direct links to open files on GitHub.
@@ -44,6 +53,7 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 
 - `app.R` - Shiny application (UI + server)
 - `data_layer.R` - all data access: fetches Evo-M1-Trait-Data from GitHub, caches it locally, builds the tables the app displays. Sourced by both `app.R` and `refresh_cache.R`.
+- `structure_reconcile.R` - Structure Profile and Trait Reconciliation functions, shared with the Evo-M1 app (`__ShinyApp/structure_reconcile.R`); keep the two copies identical
 - `refresh_cache.R` - standalone script (`Rscript refresh_cache.R`) that updates the local GitHub cache without launching Shiny. Run this whenever the data repo has changed and you want the next launch to be instant.
 - `config.R` - optional GitHub repo/branch override
 - `check_setup.R` - checks R packages and GitHub reachability
@@ -93,7 +103,7 @@ source("run_app.R")
 
 ## Deploying to the web
 
-TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Because TraitExplorer reads its data straight from GitHub at runtime, deploying only ever uploads the app code (`app.R`, `data_layer.R`, `config.R`) -- a live TraitExplorer always sees current GitHub data with no redeploy needed for a pure data change.
+TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Because TraitExplorer reads its data straight from GitHub at runtime, deploying only ever uploads the app code (`app.R`, `data_layer.R`, `structure_reconcile.R`, `config.R`) -- a live TraitExplorer always sees current GitHub data with no redeploy needed for a pure data change.
 
 - **macOS** -- double-click **`Deploy_TraitExplorer.command`** in the repo root
 - Or, from a terminal: `Rscript deploy_traitexplorer.R`

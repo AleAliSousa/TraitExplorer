@@ -36,5 +36,8 @@ message(
   "  Specimen records: ", nrow(result$specimen_data$crosswalk), "\n",
   "  Trait records: ", nrow(result$trait_data$combined), " across ",
   length(result$trait_data$domain_tables), " domains\n",
+  "  Harmonized values: ", nrow(result$harmonized$values), " (",
+  length(result$harmonized$species_choices), " species with structure comparisons; ",
+  nrow(result$harmonized$candidates), " reconciliation candidate pairs)\n",
   "  Loaded at: ", format(result$loaded_at, "%Y-%m-%d %H:%M:%S")
 )

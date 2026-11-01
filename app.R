@@ -1,6 +1,7 @@
 # TraitExplorer
 # Shiny interface for exploring the Evo-M1-Trait-Data repository,
-# with first-class specimen tracking and comparative trait search.
+# with first-class specimen tracking, comparative trait search, region and
+# structure-profile comparison within a species, and cross-source trait reconciliation.
 #
 # Data access: TraitExplorer never reads a local Evo-M1-Trait-Data checkout.
 # Every table is fetched from GitHub (see data_layer.R) and cached under
@@ -333,6 +334,106 @@ ui <- fluidPage(
     ),
 
     # ========================================================
+    # TAB: STRUCTURE PROFILE (all structures, one measurement, one species)
+    # ========================================================
+    tabPanel(
+      "Structure Profile",
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          div(class = "small-note",
+            "Every structure-level value held for one species and one kind of measurement, ",
+            "on one unit scale. Two variables for the same structure stay side by side; ",
+            "nothing is averaged across variables. Structures can be nested, so ",
+            "percentages are not additive."),
+          br(),
+          selectizeInput("bs_species", "Species", choices = NULL,
+                         options = list(placeholder = "Type a scientific name")),
+          selectInput("bs_key", "Measurement", choices = NULL),
+          selectInput("bs_ref", "Express as % of", choices = c("Absolute values" = "")),
+          checkboxInput("bs_log", "Log10 axis", value = TRUE),
+          sliderInput("bs_top", "Structures shown in the chart", min = 5, max = 150, value = 40, step = 5),
+          selectizeInput("bs_compare", "Add species for comparison (optional, up to 3)",
+                         choices = NULL, multiple = TRUE, options = list(maxItems = 3)),
+          hr(),
+          downloadButton("bs_download", "Download structure table (CSV)", class = "btn btn-sm btn-primary btn-download"),
+          width = 3
+        ),
+        mainPanel(
+          div(class = "status-box", uiOutput("bs_status")),
+          tabsetPanel(
+            tabPanel("Chart", br(), plotly::plotlyOutput("bs_plot", height = "680px")),
+            tabPanel("Table", br(), DTOutput("bs_table")),
+            tabPanel("Structures x measurements", br(),
+                     p(class = "small-note", "Which structures this species has data for, and for which kinds of measurement."),
+                     DTOutput("bs_matrix"))
+          ),
+          width = 9
+        )
+      )
+    ),
+
+    # ========================================================
+    # TAB: TRAIT RECONCILIATION (similar traits, different sources)
+    # ========================================================
+    tabPanel(
+      "Trait Reconciliation",
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          div(class = "small-note",
+            "Variables that look like the same trait from different sources (same structure, ",
+            "measurement, unit and life-stage/sex scope, or the same name once the source tag ",
+            "is removed), compared species by species. Raw trait-table columns are shown ",
+            "beside the merges that supersede them in the Evo-M1 app."),
+          br(),
+          selectizeInput("tr_verdict", "Verdict", choices = SR_VERDICTS,
+                         selected = setdiff(SR_VERDICTS, "no shared species (complementary coverage)"),
+                         multiple = TRUE),
+          radioButtons("tr_kind", "Traits", choices = c("All" = "all", "Brain structures" = "S", "Other traits" = "N"), inline = TRUE),
+          textInput("tr_search", "Variable contains", placeholder = "e.g. Neocortex, Gestation"),
+          numericInput("tr_tol", "Flag a species when values differ by more than (%)", value = 10, min = 1, max = 100),
+          hr(),
+          div(class = "small-note",
+            strong("same values"), ": >= 90% of shared species within 1%. ",
+            strong("agree within 10%"), ": median ratio within 10% and >= 75% of species within 10%. ",
+            strong("median agrees, wide scatter"), ": centred on 1 but under 75% within 10%. ",
+            strong("consistent offset"), ": a steady ratio away from 1 (unit, boundary or definition difference). ",
+            strong("different measurement basis"), ": the variable key records different bases."),
+          br(),
+          div(class = "rule-box",
+            strong("Nothing is pooled or edited. "),
+            "Record a decision in _keys/variable_canonical.csv (supersede / keep_separate); ",
+            "it then appears in the Decision column."),
+          downloadButton("tr_download_pairs", "Download candidate pairs (CSV)", class = "btn btn-sm btn-primary btn-download"),
+          width = 3
+        ),
+        mainPanel(
+          div(class = "status-box", uiOutput("tr_status")),
+          tabsetPanel(
+            id = "tr_tabs",
+            tabPanel("Candidate pairs", value = "pairs", br(),
+                     p(class = "small-note", "Select a row to open the pair. Ratios are B / A on species means in base units."),
+                     DTOutput("tr_pairs")),
+            tabPanel("Pair detail", value = "detail", br(),
+                     uiOutput("tr_pair_head"),
+                     plotly::plotlyOutput("tr_pair_plot", height = "460px"),
+                     DTOutput("tr_pair_table"),
+                     downloadButton("tr_download_pair", "Download this comparison (CSV)", class = "btn btn-sm btn-outline-primary")),
+            tabPanel("Reconciled view", value = "group", br(),
+                     uiOutput("tr_group_head"),
+                     selectizeInput("tr_precedence", "Precedence: the first variable with a value wins",
+                                    choices = NULL, multiple = TRUE, width = "100%",
+                                    options = list(plugins = list("remove_button"))),
+                     DTOutput("tr_group_table"),
+                     downloadButton("tr_download_group", "Download reconciled view (CSV)", class = "btn btn-sm btn-outline-primary"))
+          ),
+          width = 9
+        )
+      )
+    ),
+
+    # ========================================================
     # TAB 3: SPECIES DATA COVERAGE
     # ========================================================
     tabPanel(
@@ -453,6 +554,10 @@ ui <- fluidPage(
         ),
         h4("Fossil Hominin Rule"),
         p("Fossil specimens (such as Late Pleistocene early Homo sapiens and Neanderthals) carry ", code("specimen_kind = fossil_specimen"), " and must never be pooled into extant species means."),
+        h4("Structure Profile"),
+        p("For one species, every structure-level value held for one kind of measurement on one unit scale, optionally as a % of a reference (e.g. weighed whole-brain mass) and beside up to three other species. Complements Region Comparison, which plots one measurement against another."),
+        h4("Trait Reconciliation"),
+        p("Pairs of variables that look like the same trait from different sources, compared species by species, with a reconciled view that applies a precedence order you choose (first available wins) and names the source of each value. Nothing is averaged or edited; decisions belong in _keys/variable_canonical.csv."),
         h4("Search Behavior"),
         p("All search boxes perform multi-term matching (AND logic): entering 'Pan troglodytes sleep' returns records that match all terms across all fields.")
       )
@@ -470,6 +575,7 @@ server <- function(input, output, session) {
     index_tbl = initial_data$index_tbl,
     specimen_data = initial_data$specimen_data,
     trait_data = initial_data$trait_data,
+    harmonized = initial_data$harmonized,
     loaded_at = initial_data$loaded_at
   )
 
@@ -523,6 +629,7 @@ server <- function(input, output, session) {
       rv$index_tbl <- fresh$index_tbl
       rv$specimen_data <- fresh$specimen_data
       rv$trait_data <- fresh$trait_data
+      rv$harmonized <- fresh$harmonized
       rv$loaded_at <- fresh$loaded_at
     })
     sync_choices()
@@ -681,7 +788,10 @@ server <- function(input, output, session) {
     all_recs <- rv$specimen_data$crosswalk[rv$specimen_data$crosswalk$canonical_specimen == canon, , drop = FALSE]
 
     # Look up taxon concept
-    tc_row <- rv$specimen_data$taxon_concepts[rv$specimen_data$taxon_concepts$taxon_concept == sel$taxon_concept, , drop = FALSE]
+    # `%in%`, not `==`: a specimen with no taxon_concept (most rows) would
+    # otherwise compare NA against every registry row, index all of them as
+    # NA rows, and crash the `%||%` fallbacks below with a length-9 vector.
+    tc_row <- rv$specimen_data$taxon_concepts[rv$specimen_data$taxon_concepts$taxon_concept %in% sel$taxon_concept, , drop = FALSE]
 
     # Look up evidence sources
     ev_ids <- strsplit(sel$evidence_source_ids %||% "", "[; ]+")[[1]]
@@ -1381,7 +1491,7 @@ server <- function(input, output, session) {
 
   output$rc_plot <- plotly::renderPlotly({
     d <- rc_pairs()
-    if (!nrow(d)) return(plotly::plotly_empty())
+    if (!nrow(d)) return(plotly::plotly_empty(type = "scatter", mode = "markers"))
     f <- rc_fit()
     xlab <- input$rc_x; ylab <- input$rc_y
     hover <- paste0(
@@ -1396,8 +1506,9 @@ server <- function(input, output, session) {
     pl <- plotly::plot_ly(
       d, x = ~X, y = ~Y, type = "scatter",
       mode = if (isTRUE(input$rc_labels)) "markers+text" else "markers",
-      text = if (isTRUE(input$rc_labels)) d$Point else NULL, textposition = "top center",
-      textfont = list(size = 10, color = "#374151"),
+      text = if (isTRUE(input$rc_labels)) d$Point else NULL,
+      textposition = if (isTRUE(input$rc_labels)) "top center" else NULL,
+      textfont = if (isTRUE(input$rc_labels)) list(size = 10, color = "#374151") else NULL,
       hovertext = hover, hoverinfo = "text",
       marker = list(size = 10, color = col, line = list(color = "#ffffff", width = 1)),
       name = "paired points"
@@ -1569,6 +1680,216 @@ server <- function(input, output, session) {
       if (!ok) stop("Could not copy the selected file.", call. = FALSE)
     }
   )
+
+  # ---- Structure Profile tab ----
+  nz1 <- function(x) !is.null(x) && length(x) > 0 && !is.na(x[1]) && nzchar(x[1])
+  harm <- reactive(rv$harmonized)
+
+  observeEvent(harm(), {
+    ch <- harm()$species_choices
+    sel <- if (isTRUE(isolate(input$bs_species) %in% ch)) isolate(input$bs_species)
+           else if ("Homo sapiens" %in% ch) "Homo sapiens" else unname(ch)[1]
+    updateSelectizeInput(session, "bs_species", choices = ch, selected = sel, server = TRUE)
+  })
+  observeEvent(input$bs_species, {
+    req(nz1(input$bs_species))
+    h <- harm()
+    updateSelectInput(session, "bs_key", choices = sr_keys_for(h$structure_rows, input$bs_species))
+    others <- setdiff(unname(h$species_choices), input$bs_species)
+    updateSelectizeInput(session, "bs_compare", choices = others, server = TRUE,
+                         selected = intersect(isolate(input$bs_compare), others))
+  })
+  observeEvent(list(input$bs_species, input$bs_key), {
+    req(nz1(input$bs_species), nz1(input$bs_key))
+    h <- harm()
+    refs <- sr_reference_choices(h$values, h$meta, input$bs_species, input$bs_key)
+    keep <- if (isTRUE(isolate(input$bs_ref) %in% refs)) isolate(input$bs_ref) else ""
+    updateSelectInput(session, "bs_ref", choices = c("Absolute values" = "", refs), selected = keep)
+  })
+
+  bs_prof <- reactive({
+    req(nz1(input$bs_species), nz1(input$bs_key))
+    h <- harm()
+    sp <- unique(c(input$bs_species, input$bs_compare))
+    p <- sr_profile(h$structure_rows, sp, input$bs_key)
+    if (!nrow(p)) return(p)
+    if (nz1(input$bs_ref)) {
+      ref <- vapply(sp, function(s) sr_reference_value(h$values, h$meta, s, input$bs_ref), numeric(1))
+      p$Reference <- input$bs_ref
+      p$Reference_value <- unname(ref[p$Species])
+      p$Pct_of_reference <- signif(100 * p$Value / p$Reference_value, 4)
+    }
+    p
+  })
+
+  output$bs_status <- renderUI({
+    p <- bs_prof()
+    if (!nrow(p)) return(span("No structure-level values for this species and measurement."))
+    foc <- p[p$Species == input$bs_species, , drop = FALSE]
+    n_multi <- length(unique(foc$Structure[foc$Same_structure_rows > 1]))
+    tagList(
+      strong(em(input$bs_species)), ": ", strong(length(unique(foc$Structure))),
+      " structures, values in ", strong(foc$Unit[1]), ", from ", length(unique(foc$Dataset)), " dataset(s).",
+      if (nz1(input$bs_ref)) tagList(" Shown as % of ", code(input$bs_ref), "."),
+      if (n_multi) div(class = "conflict-alert", style = "margin-top:8px;",
+        strong(n_multi), " structure(s) are reported by more than one variable or dataset; ",
+        "they are shown side by side, not averaged. See the Trait Reconciliation tab.")
+    )
+  })
+
+  output$bs_plot <- plotly::renderPlotly({
+    p <- bs_prof()
+    validate(need(nrow(p) > 0, "No structure-level values for this species and measurement."))
+    pct <- "Pct_of_reference" %in% names(p)
+    p$y <- if (pct) p$Pct_of_reference else p$Value
+    p <- p[is.finite(p$y) & (!isTRUE(input$bs_log) | p$y > 0), , drop = FALSE]
+    validate(need(nrow(p) > 0, "Nothing to plot (no reference value, or no positive values on a log axis)."))
+    nser <- tapply(paste(p$Variable, p$Dataset), p$Structure, function(x) length(unique(x)))
+    p$Row <- ifelse(nser[p$Structure] > 1, paste0(p$Structure, " [", p$Variable, " | ", p$Dataset, "]"), p$Structure)
+    foc <- p[p$Species == input$bs_species, , drop = FALSE]
+    rows <- utils::head(unique(foc$Row[order(-foc$y)]), input$bs_top)
+    p <- p[p$Row %in% rows, , drop = FALSE]
+    p$Row <- factor(p$Row, levels = rev(rows))
+    p$hover <- sprintf("%s<br>%s<br>%s: %s %s<br>%s", p$Species, p$Row, p$Variable,
+                       signif(p$Value, 4), p$Unit, p$Dataset)
+    plotly::plot_ly(p, x = ~y, y = ~Row, color = ~Species, type = "bar", orientation = "h",
+                    text = ~hover, hoverinfo = "text") |>
+      plotly::layout(barmode = "group",
+                     xaxis = list(title = if (pct) paste0("% of ", input$bs_ref) else p$Unit[1],
+                                  type = if (isTRUE(input$bs_log)) "log" else "linear"),
+                     yaxis = list(title = ""), margin = list(l = 10), legend = list(orientation = "h"))
+  })
+
+  output$bs_table <- renderDT({
+    p <- bs_prof()
+    if (!nrow(p)) return(datatable(data.frame(Message = "No rows.")))
+    p$Same_structure_rows <- NULL
+    for (cl in intersect(c("Value", "Min", "Max", "Reference_value"), names(p))) p[[cl]] <- signif(p[[cl]], 5)
+    datatable(p, rownames = FALSE, filter = "top", options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  output$bs_matrix <- renderDT({
+    req(nz1(input$bs_species))
+    m <- sr_species_matrix(harm()$structure_rows, input$bs_species)
+    if (!nrow(m)) return(datatable(data.frame(Message = "No structure-level values.")))
+    datatable(m, rownames = FALSE, filter = "top", options = list(pageLength = 25, scrollX = TRUE))
+  })
+
+  output$bs_download <- downloadHandler(
+    filename = function() paste0("TraitExplorer_BrainStructures_", gsub("[^A-Za-z0-9]+", "_", input$bs_species), "_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    content = function(file) write.csv(bs_prof(), file, row.names = FALSE, na = ""),
+    contentType = "text/csv"
+  )
+
+  # ---- Trait Reconciliation tab ----
+  tr_filtered <- reactive({
+    d <- harm()$candidates
+    if (!nrow(d)) return(d)
+    d <- d[as.character(d$Verdict) %in% input$tr_verdict, , drop = FALSE]
+    if (!identical(input$tr_kind, "all")) d <- d[startsWith(d$Group, paste0(input$tr_kind, "|")), , drop = FALSE]
+    q <- tolower(trimws(input$tr_search %||% ""))
+    if (nzchar(q)) d <- d[grepl(q, tolower(d$Series_A), fixed = TRUE) | grepl(q, tolower(d$Series_B), fixed = TRUE), , drop = FALSE]
+    d
+  })
+
+  output$tr_status <- renderUI({
+    d <- harm()$candidates
+    if (!nrow(d)) return(span("No candidate pairs were found."))
+    v <- table(factor(as.character(d$Verdict), levels = SR_VERDICTS))
+    tagList(strong(nrow(d)), " candidate pairs in ", length(unique(d$Group)), " groups. ",
+            paste(sprintf("%s: %d", names(v), as.integer(v)), collapse = " | "),
+            ". ", strong(sum(nzchar(d$Decision_on_record))), " with a decision on record.")
+  })
+
+  output$tr_pairs <- renderDT({
+    d <- tr_filtered()
+    if (!nrow(d)) return(datatable(data.frame(Message = "No candidate pairs match these filters.")))
+    d$Group <- NULL; d$Verdict <- as.character(d$Verdict)
+    names(d) <- gsub("_", " ", names(d))
+    datatable(d, rownames = FALSE, selection = "single", filter = "top", options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  tr_sel <- reactive({
+    i <- input$tr_pairs_rows_selected; d <- tr_filtered()
+    if (!length(i) || !nrow(d) || i > nrow(d)) return(NULL)
+    d[i, , drop = FALSE]
+  })
+  observeEvent(input$tr_pairs_rows_selected, updateTabsetPanel(session, "tr_tabs", selected = "detail"), ignoreInit = TRUE)
+
+  tr_detail <- reactive({
+    s <- tr_sel(); req(s); h <- harm()
+    sr_pair_detail(h$values, h$meta, s$Series_A, s$Series_B, tol = input$tr_tol / 100)
+  })
+
+  output$tr_pair_head <- renderUI({
+    s <- tr_sel()
+    if (is.null(s)) return(div(class = "status-box", "Select a pair on the Candidate pairs tab."))
+    d <- tr_detail()
+    tagList(
+      p(strong("A: "), code(s$Series_A), br(), strong("B: "), code(s$Series_B)),
+      p(strong(as.character(s$Verdict)), " - ", s$Shared_species, " shared species; median B/A = ",
+        s$Median_ratio_B_over_A, "; ", sum(d$Status == "DIFFERS"), " species differ by more than ",
+        input$tr_tol, "%. Values in ", s$Unit, "."),
+      if (nz1(s$Decision_on_record)) div(class = "rule-box", strong("Decision on record: "), s$Decision_on_record)
+    )
+  })
+
+  output$tr_pair_plot <- plotly::renderPlotly({
+    d <- tr_detail()
+    d <- d[is.finite(d$Value_A) & is.finite(d$Value_B) & d$Value_A > 0 & d$Value_B > 0, , drop = FALSE]
+    validate(need(nrow(d) > 0, "No shared species with positive values; coverage is listed below."))
+    rng <- range(c(d$Value_A, d$Value_B))
+    plotly::plot_ly(d, x = ~Value_A, y = ~Value_B, color = ~Status, type = "scatter", mode = "markers",
+                    text = ~paste0(Species, "<br>B/A = ", Ratio_B_over_A), hoverinfo = "text") |>
+      plotly::add_lines(x = rng, y = rng, inherit = FALSE, name = "A = B",
+                        line = list(color = "grey", dash = "solid")) |>
+      plotly::layout(xaxis = list(title = paste0("A (", tr_sel()$Unit, ")"), type = "log"),
+                     yaxis = list(title = paste0("B (", tr_sel()$Unit, ")"), type = "log"))
+  })
+
+  output$tr_pair_table <- renderDT({
+    datatable(tr_detail(), rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  tr_group_series <- reactive({
+    s <- tr_sel(); req(s)
+    g <- harm()$candidates; g <- g[g$Group == s$Group, , drop = FALSE]
+    ser <- unique(c(g$Series_A, g$Series_B))
+    n <- vapply(ser, function(x) c(g$Species_A, g$Species_B)[match(x, c(g$Series_A, g$Series_B))], numeric(1))
+    ser[order(-n)]
+  })
+  observeEvent(tr_group_series(), {
+    updateSelectizeInput(session, "tr_precedence", choices = tr_group_series(), selected = tr_group_series())
+  })
+  output$tr_group_head <- renderUI({
+    if (is.null(tr_sel())) return(div(class = "status-box", "Select a pair on the Candidate pairs tab."))
+    p(class = "small-note",
+      "Every variable in this group, one column each. Preferred value takes the first variable in the ",
+      "precedence list that has a value for the species, and Taken from names it: a fallback rule, ",
+      "not an average. Remove and re-add variables to change the order. Species whose variables ",
+      "differ by more than ", input$tr_tol, "% are flagged and listed first.")
+  })
+  tr_group <- reactive({
+    h <- harm(); ser <- tr_group_series()
+    prec <- if (length(input$tr_precedence)) input$tr_precedence else ser
+    sr_reconciled_view(h$values, h$meta, ser, precedence = prec, tol = input$tr_tol / 100)
+  })
+  output$tr_group_table <- renderDT({
+    d <- tr_group()
+    if (!nrow(d)) return(datatable(data.frame(Message = "No values.")))
+    num <- vapply(d, is.numeric, logical(1)); d[num] <- lapply(d[num], function(x) signif(x, 6))
+    datatable(d, rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  output$tr_download_pairs <- downloadHandler(
+    filename = function() paste0("TraitExplorer_Reconcile_candidates_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    content = function(file) write.csv(tr_filtered(), file, row.names = FALSE, na = ""), contentType = "text/csv")
+  output$tr_download_pair <- downloadHandler(
+    filename = function() paste0("TraitExplorer_Reconcile_pair_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    content = function(file) write.csv(tr_detail(), file, row.names = FALSE, na = ""), contentType = "text/csv")
+  output$tr_download_group <- downloadHandler(
+    filename = function() paste0("TraitExplorer_Reconciled_view_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    content = function(file) write.csv(tr_group(), file, row.names = FALSE, na = ""), contentType = "text/csv")
 }
 
 shinyApp(ui, server)

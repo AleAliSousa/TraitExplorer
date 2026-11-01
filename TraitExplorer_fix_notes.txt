@@ -18,3 +18,5 @@ Fixes and enhancements:
 9. New Region Comparison tab: region-level table built in data_layer.R (build_region_table) from cellcounts, volumes, weights, CMR, GLI, cortical_areas, cell_morphology, cortical_layers via _keys/variable_domain.csv + _keys/anatomy_crosswalk.csv (47 crosswalk rows added upstream). Within-species (points = regions) and across-species (points = species) modes, OLS + Pearson/Spearman, link-class colouring, unpaired list, CSV download.
 10. Species names harmonised through _keys/species_display_aliases.csv in the combined trait table; pickers show common names (species_cohorts.csv).
 11. Optional TRAIT_DATA_LOCAL_DIR preview mode for un-pushed data; check_setup.R now requires plotly.
+12. Fixed a pre-existing Specimen Inspector crash: taxon-concept lookup used `==` against a possibly-NA taxon_concept, indexing all 9 registry rows and erroring in `%||%` for most specimens. Now `%in%`. Verified with an inspector sweep over 51 representative rows (0 failures).
+13. Added test_app.R (Rscript test_app.R [local-repo-path]) -- headless regression test to run after a data or app change.

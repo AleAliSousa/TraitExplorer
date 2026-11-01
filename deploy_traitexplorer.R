@@ -6,8 +6,8 @@
 # TraitExplorer has no local data of its own to push -- it reads
 # Evo-M1-Trait-Data straight from GitHub at runtime (see data_layer.R), so
 # the live app always sees current GitHub data with no redeploy needed for
-# a pure data change. Redeploy only when app.R, data_layer.R, or config.R
-# themselves change.
+# a pure data change. Redeploy only when app.R, data_layer.R,
+# structure_reconcile.R or config.R themselves change.
 #
 # First-time setup (once per computer):
 #   1. Log into https://www.shinyapps.io -> Account -> Tokens -> Show ->
@@ -46,7 +46,7 @@ rsconnect::deployApp(
   appDir = app_dir,
   appName = "TraitExplorer",
   appTitle = "TraitExplorer",
-  appFiles = c("app.R", "data_layer.R", "config.R"),
+  appFiles = c("app.R", "data_layer.R", "structure_reconcile.R", "config.R"),
   forceUpdate = TRUE
 )
 

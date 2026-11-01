@@ -58,6 +58,11 @@ API_TREE_URL    <- sprintf(
 CACHE_DIR <- Sys.getenv("TRAITEXPLORER_CACHE_DIR", unset = file.path(app_dir, ".gh_cache"))
 dir.create(CACHE_DIR, recursive = TRUE, showWarnings = FALSE)
 
+# Shared with the Evo-M1 app (__ShinyApp/structure_reconcile.R): structure
+# profile within a species and cross-source trait reconciliation. Keep the
+# two copies identical.
+source(file.path(app_dir, "structure_reconcile.R"), local = TRUE)
+
 gh_ua <- httr::user_agent("TraitExplorer (https://github.com/AleAliSousa/TraitExplorer)")
 
 # OPT-IN preview of a local Evo-M1-Trait-Data checkout. Off by default: the
@@ -494,6 +499,132 @@ load_trait_data <- function(tree, force = FALSE) {
 }
 
 # --------------------------------------------------
+# HARMONIZED VALUES (Evo-M1 app labels) -- for the Structure Profile and
+# Trait Reconciliation tabs
+# --------------------------------------------------
+# A port of the Evo-M1 app's load_compiled() (__ShinyApp/app.R): the same
+# merge files, the same filters and the same variable labels, so that
+# _keys/variable_definitions.csv (which is keyed on those labels) classifies
+# every value here exactly as it does in the Evo-M1 app. One deliberate
+# difference: the supersede step (_keys/variable_canonical.csv) is NOT
+# applied. TraitExplorer shows the raw columns beside the merge that
+# supersedes them, because seeing both is the point of reconciliation; the
+# decision on record is shown next to each pair instead.
+# If a loader in app.R changes, change it here too.
+
+HARMONIZED_SOURCES <- list(
+  list("__merging_volumes/volumes_long.csv",                    "Brain-structure volumes", "std",  "Teams"),
+  list("__merging_cellcounts/cellcounts_long.csv",              "Cell counts",             "std",  "Source"),
+  list("__ShinyApp/data/evom1_traits_long.csv",                 "EvoM1 traits",            "std",  "Source"),
+  list("__merging_sensory/taste_long.csv",                      "Taste performance",       "merge"),
+  list("__merging_behaviour/social_mirror_play_long.csv",       "Social composition, mirror tests & play", "merge"),
+  list("__merging_volumes/claustrum_cerebellar_long.csv",       "Claustrum & cerebellar anatomy", "merge"),
+  list("__merging_body_ecology/body_ecology_long.csv",          "Body & ecology",          "merge"),
+  list("__merging_brain_mass/brain_mass_long.csv",              "Brain mass",              "merge"),
+  list("__merging_endocranial_volume/endocranial_volume_long.csv", "Endocranial volume",   "merge"),
+  list("__merging_behaviour/behaviour_long.csv",                "Behaviour",               "merge"),
+  list("__merging_cerebellar_folding/cerebellar_folding_long.csv", "Cerebellar folding",   "merge"),
+  list("__merging_cerebral_metabolic_rate/cerebral_metabolic_rate_long.csv", "Cerebral metabolic rate", "cmr"),
+  list("__merging_GLI/GLI_long.csv",                            "Grey-level index",        "gli"),
+  list("__merging_cortical_areas/cortical_areas_long.csv",      "Cortical areas & surfaces", "cortical_areas"),
+  list("__merging_cortical_layers/cortical_layers_m1_long.csv", "Cortical layer thickness", "cortical_layers"),
+  list("__merging_cell_morphology/cell_morphology_long.csv",    "Cell type, size & morphology", "cell_morphology"),
+  list("__merging_gyrification/gyrification_long.csv",          "Gyrification (GI)",       "gyrification"),
+  list("__merging_sensory/sensory_long.csv",                    "Sensory performance",     "sensory"),
+  list("__merging_weights/weights_long.csv",                    "Brain-part weights",      "weights"),
+  list("__merging_supplementary/supplementary_long.csv",        "Supplementary sources",   "merge")
+)
+
+harmonized_frame <- function(species, dataset, label, value, source, unit = NA_character_) {
+  value <- as.character(value)
+  data.frame(Species = as.character(species), Dataset = dataset, Variable = as.character(label),
+             Value = value, Value_num = suppressWarnings(as.numeric(value)),
+             Source = as.character(source), Unit = as.character(unit),
+             stringsAsFactors = FALSE)
+}
+
+harmonize_one <- function(d, dataset, kind, source_col = NULL) {
+  if (!nrow(d)) return(NULL)
+  col <- function(nm) if (nm %in% names(d)) d[[nm]] else rep(NA, nrow(d))
+  switch(kind,
+    std = harmonized_frame(d$Species, dataset, d$Variable, d$Value, col(source_col)),
+    merge = {
+      if (dataset == "Brain mass") {
+        d <- d[d$Measure != "Brain_Mass_mass_or_volume", , drop = FALSE]
+        d$Measure[d$Measure == "Brain_Mass_from_volume_or_ecv"] <- "Brain_Mass_estimated_from_volume"
+      }
+      harmonized_frame(d$Species, dataset, paste0(d$Measure, " (", d$Units, ")"), d$Value,
+                       paste0(dataset, " merge: ", d$Teams), d$Units)
+    },
+    cmr = harmonized_frame(d$Species, dataset, paste0(d$Region, "_", d$Measure, " (", d$Units, ")"),
+                           d$Value, paste0("CMR merge: ", d$Compilations), d$Units),
+    gli = harmonized_frame(d$Species, dataset, paste0("GLI_", d$area_as_published, "_", d$stratum, " (%)"),
+                           d$GLI_pct, d$source, "%"),
+    cortical_areas = {
+      d <- d[!is.na(d$status) & d$status == "active", , drop = FALSE]
+      harmonized_frame(d$Species, dataset, d$Standardized_Term, d$value, d$source)
+    },
+    cortical_layers = {
+      d <- d[!is.na(d$merge_default) & as.logical(d$merge_default) & !is.na(d$value), , drop = FALSE]
+      meas <- ifelse(d$measure == "absolute thickness", "Thickness_abs", "Thickness_prop")
+      layer <- gsub("[^A-Za-z0-9]+", "_", d$layer)
+      harmonized_frame(d$Species, dataset, paste0("M1_Layer", layer, "_", meas, " (", d$unit, ")"),
+                       d$value, d$source, d$unit)
+    },
+    cell_morphology = {
+      d <- d[!is.na(d$merge_default) & as.logical(d$merge_default) &
+               d$statistic %in% c("mean", "estimate", "value", "category") &
+               !is.na(d$taxon_level) & d$taxon_level == "species", , drop = FALSE]
+      val <- ifelse(!is.na(d$value), as.character(d$value), as.character(d$value_text))
+      keep <- !is.na(val) & nzchar(val)
+      d <- d[keep, , drop = FALSE]; val <- val[keep]
+      out <- harmonized_frame(d$Species, dataset, paste0(d$variable_label, " (", d$unit, ")"),
+                              val, d$source, d$unit)
+      out$Value_num <- suppressWarnings(as.numeric(d$value))
+      out
+    },
+    gyrification = harmonized_frame(d$Species, dataset, rep("GI", nrow(d)), d$GI, d$source, "ratio"),
+    sensory = harmonized_frame(d$Species, dataset, d$Measure, d$Value,
+                               ifelse(!is.na(d$Sources) & nzchar(d$Sources), d$Sources, dataset), d$Units),
+    weights = {
+      d <- d[!is.na(d$canonical_structure) & nzchar(trimws(d$canonical_structure)), , drop = FALSE]
+      harmonized_frame(d$Species, dataset, paste0(d$canonical_structure, "_Mass (g)"), d$mass_g,
+                       ifelse(!is.na(d$citation) & nzchar(d$citation), d$citation, d$source), "g")
+    },
+    NULL)
+}
+
+load_harmonized_values <- function(force = FALSE) {
+  parts <- lapply(HARMONIZED_SOURCES, function(s) {
+    d <- read_gh_csv(s[[1]], force)
+    tryCatch(harmonize_one(d, s[[2]], s[[3]], if (length(s) > 3) s[[4]] else NULL),
+             error = function(e) {
+               message("Harmonized values: skipped ", s[[1]], " (", conditionMessage(e), ")")
+               NULL
+             })
+  })
+  values <- do.call(rbind, parts[!vapply(parts, is.null, logical(1))])
+  if (is.null(values)) values <- harmonized_frame(character(0), character(0), character(0), character(0), character(0))
+  aliases <- read_gh_csv("_keys/species_display_aliases.csv", force)
+  if (nrow(aliases) && all(c("variant", "canonical") %in% names(aliases))) {
+    hit <- match(values$Species, aliases$variant)
+    values$Species[!is.na(hit)] <- aliases$canonical[hit[!is.na(hit)]]
+  }
+  values <- values[!is.na(values$Value) & nzchar(values$Value) & values$Value != "NA", , drop = FALSE]
+  vardef <- read_gh_csv("_keys/variable_definitions.csv", force)
+  canon  <- read_gh_csv("_keys/variable_canonical.csv", force)
+  if (!nrow(vardef)) vardef <- NULL
+  first <- values[!duplicated(values$Variable), c("Variable", "Dataset")]
+  meta <- sr_label_meta(first$Variable, first$Dataset, vardef)
+  srows <- sr_structure_rows(values, meta)
+  cands <- tryCatch(sr_candidates(values, meta, canon), error = function(e) {
+    message("Reconciliation candidates not built: ", conditionMessage(e)); data.frame()
+  })
+  list(values = values, meta = meta, structure_rows = srows,
+       species_choices = sr_species_choices(srows), candidates = cands)
+}
+
+# --------------------------------------------------
 # SPECIMEN LOOKUP HELPERS (pure functions over already-loaded data)
 # --------------------------------------------------
 
@@ -714,6 +845,21 @@ build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
   d <- domain_tables[["cellcounts"]]
   if (!is.null(d) && nrow(d)) {
     lk <- vd_lookup("Cell counts", d$Variable)
+    # A variable added upstream before variable_domain.csv catches up is not
+    # dropped: cellcounts labels are "<Structure>_<Measure>" with a CamelCase
+    # structure (no underscore), so the label itself yields both parts; the
+    # unit is taken from any existing key row with the same Measure code.
+    miss <- is.na(lk$structure) & grepl("_", d$Variable)
+    if (any(miss)) {
+      lk$structure[miss] <- sub("_.*$", "", d$Variable[miss])
+      lk$measure[miss] <- sub("^[^_]*_", "", d$Variable[miss])
+      unit_by_measure <- if (nrow(vd)) {
+        u <- vd[vd$dataset %in% "Cell counts" & !is.na(vd$Measure) & !is.na(vd$Unit), c("Measure", "Unit")]
+        u <- u[!duplicated(u$Measure), ]
+        stats::setNames(u$Unit, u$Measure)
+      } else character()
+      lk$unit[miss] <- unname(unit_by_measure[lk$measure[miss]])
+    }
     add_piece("cellcounts", sp(d), lk$structure, d$Variable, lk$measure, lk$unit, d$Value, d$Source)
   }
   d <- domain_tables[["volumes"]]
@@ -826,6 +972,7 @@ load_all_data <- function(force_tree = FALSE, force_content = FALSE) {
     index_tbl = build_index(tree),
     specimen_data = load_specimen_system(tree, force = force_content),
     trait_data = load_trait_data(tree, force = force_content),
+    harmonized = load_harmonized_values(force = force_content),
     loaded_at = Sys.time()
   )
 }
