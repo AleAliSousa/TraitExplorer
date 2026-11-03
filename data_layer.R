@@ -484,7 +484,8 @@ load_trait_data <- function(tree, force = FALSE) {
     build_region_table(domain_tables, anatomy_keys, species_keys),
     error = function(e) {
       message("Region table could not be built: ", conditionMessage(e))
-      data.frame()
+      # keep the reason so the Region Comparison tab can show it
+      structure(data.frame(), build_error = conditionMessage(e))
     }
   )
 
@@ -826,8 +827,24 @@ build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
   }
 
   pieces <- list()
+  region_notes <- character(0)
   add_piece <- function(domain, species, structure, term, measure, unit, value, source, n = NA) {
     if (!length(value)) return(invisible(NULL))
+    # A column absent from this copy of a merge file (an older cached file,
+    # or a schema change upstream) arrives as NULL; data.frame() would then
+    # fail with "differing number of rows" and lose the WHOLE region table.
+    # Fill it with NA instead and say which column was missing.
+    args <- list(species = species, structure = structure, term = term, measure = measure,
+                 unit = unit, source = source, n = n)
+    empty <- names(args)[vapply(args, function(v) is.null(v) || !length(v), logical(1))]
+    if (length(empty)) {
+      message("Region table: ", domain, " has no ", paste(empty, collapse = ", "),
+              " column in the loaded file; filled with NA.")
+      region_notes <<- c(region_notes, paste0(domain, ": no ", paste(empty, collapse = ", ")))
+      for (nm in empty) args[[nm]] <- NA
+    }
+    species <- args$species; structure <- args$structure; term <- args$term
+    measure <- args$measure; unit <- args$unit; source <- args$source; n <- args$n
     pieces[[length(pieces) + 1L]] <<- data.frame(
       Domain = domain,
       Species_printed = as.character(species),
@@ -951,6 +968,7 @@ build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
   rownames(out) <- NULL
   # A readable variable label used in the pickers: "CMR: CMRgl (umol/100g/min)"
   out$VariableKey <- paste0(out$Domain, ": ", out$Measure, ifelse(is.na(out$Unit) | !nzchar(out$Unit), "", paste0(" (", out$Unit, ")")))
+  if (length(region_notes)) attr(out, "missing_columns") <- region_notes
   out
 }
 

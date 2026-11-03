@@ -1361,7 +1361,8 @@ server <- function(input, output, session) {
       filter(n >= 2) %>% group_by(Species) %>% summarise(k = dplyr::n(), .groups = "drop") %>%
       filter(k >= 2) %>% pull(Species)
     sp_ok <- species_choices_from(sp_ok)
-    labels <- species_display_label(sp_ok, rv$trait_data$species_keys)
+    if (!length(sp_ok)) sp_ok <- character(0)
+    labels <- as.character(species_display_label(sp_ok, rv$trait_data$species_keys))
     sel <- isolate(input$rc_species)
     if (!is.null(isolate(rc_pending$species))) sel <- isolate(rc_pending$species)
     if (is.null(sel) || !sel %in% sp_ok) sel <- if ("Mus musculus" %in% sp_ok) "Mus musculus" else sp_ok[1]
@@ -1402,7 +1403,9 @@ server <- function(input, output, session) {
         filter(n >= 2) %>% arrange(VariableKey)
     } else data.frame(VariableKey = character(), n = integer())
     choices <- vars$VariableKey
-    labels <- paste0(vars$VariableKey, "  [", vars$n, " points]")
+    # paste0() on zero-length input returns one string, not zero, so an empty
+    # scope used to crash setNames() below and end the whole session.
+    labels <- if (length(choices)) paste0(vars$VariableKey, "  [", vars$n, " points]") else character(0)
     cur_x <- isolate(input$rc_x); cur_y <- isolate(input$rc_y)
     px <- isolate(rc_pending$x); py <- isolate(rc_pending$y)
     if (!is.null(px) && px %in% choices) cur_x <- px
@@ -1461,7 +1464,11 @@ server <- function(input, output, session) {
 
   output$rc_status <- renderUI({
     d <- rc_pairs()
-    if (!nrow(rv$trait_data$region)) return(p(class = "small-note", "No region-level data could be built from the loaded domains."))
+    if (!nrow(rv$trait_data$region)) {
+      why <- attr(rv$trait_data$region, "build_error")
+      return(p(class = "small-note", "No region-level data could be built from the loaded domains.",
+               if (!is.null(why)) tagList(br(), strong("Reason: "), code(why))))
+    }
     if (is.null(input$rc_x) || is.null(input$rc_y) || !nzchar(input$rc_x %||% "") || !nzchar(input$rc_y %||% "")) {
       return(p(class = "small-note", "Choose a species (or region) and two variables."))
     }

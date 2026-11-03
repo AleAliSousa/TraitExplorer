@@ -14,6 +14,10 @@ setwd(app_dir)
 env <- new.env(); suppressMessages(sys.source("app.R", envir = env))
 sx <- env$initial_data$specimen_data$crosswalk
 cat(sprintf("[%s] specimens=%d accepted_name present=%d basis=%s region_rows=%d\n", label, nrow(sx), sum(!is.na(sx$accepted_name)), paste(names(table(sx$taxon_resolution_basis)), collapse="/"), nrow(env$initial_data$trait_data$region)))
+rb_err <- attr(env$initial_data$trait_data$region, "build_error")
+if (!is.null(rb_err)) cat(sprintf("[%s] REGION TABLE BUILD ERROR: %s\n", label, rb_err))
+rb_miss <- attr(env$initial_data$trait_data$region, "missing_columns")
+if (!is.null(rb_miss)) cat(sprintf("[%s] region table missing columns (filled NA): %s\n", label, paste(rb_miss, collapse = "; ")))
 testServer(env$server, {
   # Region comparison: proxy off, species mode, label toggles, fewer than 3 points
   session$setInputs(rc_mode="regions", rc_proxy=FALSE, rc_log=TRUE, rc_labels=FALSE, rc_species="Mus musculus", rc_x="CMR: CMRgl (umol/100g/min)", rc_y="cellcounts: N.n (count)")
@@ -43,4 +47,32 @@ testServer(env$server, {
   idx <- unique(c(match(unique(grp), grp), which(as.logical(dat$taxon_conflict) %in% TRUE)))
   fails <- 0; for (i in idx) { session$setInputs(specimen_table_rows_selected = i); r <- tryCatch({output$specimen_inspector; TRUE}, error=function(e) {cat("  FAIL row", i, dat$canonical_specimen[i], ":", conditionMessage(e), "\n"); FALSE}); if (!r) fails <- fails + 1 }
   cat(sprintf("[%s] inspector sweep: %d rows tested, %d failures\n", label, length(idx), fails))
+})
+# Structure Profile + Trait Reconciliation (shared structure_reconcile.R)
+testServer(env$server, {
+  h <- rv$harmonized
+  cat(sprintf("[%s] harmonized values=%d structure-profile species=%d reconciliation pairs=%d\n", label,
+              nrow(h$values), length(h$species_choices), nrow(h$candidates)))
+  sp <- if ("Homo sapiens" %in% h$species_choices) "Homo sapiens" else unname(h$species_choices)[1]
+  keys <- env$sr_keys_for(h$structure_rows, sp)
+  session$setInputs(bs_species = sp, bs_key = unname(keys)[1], bs_ref = "", bs_log = TRUE, bs_top = 40)
+  p <- bs_prof()
+  cat(sprintf("[%s] structure profile %s | %s: rows=%d table renders=%s matrix renders=%s\n", label, sp,
+              names(keys)[1], nrow(p), !is.null(output$bs_table), !is.null(output$bs_matrix)))
+  refs <- env$sr_reference_choices(h$values, h$meta, sp, unname(keys)[1])
+  if (length(refs)) {
+    session$setInputs(bs_ref = refs[1]); p <- bs_prof()
+    cat(sprintf("[%s] %% of %s: finite=%d of %d\n", label, refs[1], sum(is.finite(p$Pct_of_reference)), nrow(p)))
+  }
+  session$setInputs(bs_compare = setdiff(unname(h$species_choices), sp)[1:2]); p <- bs_prof()
+  cat(sprintf("[%s] with comparison species: species=%d rows=%d\n", label, length(unique(p$Species)), nrow(p)))
+  session$setInputs(tr_verdict = env$SR_VERDICTS, tr_kind = "all", tr_search = "", tr_tol = 10)
+  f <- tr_filtered(); cat(sprintf("[%s] reconciliation pairs listed=%d status renders=%s\n", label, nrow(f), !is.null(output$tr_status)))
+  if (nrow(f)) {
+    session$setInputs(tr_pairs_rows_selected = 1L)
+    dd <- tr_detail(); g <- tr_group()
+    cat(sprintf("[%s] pair '%s' vs '%s': detail rows=%d differs=%d reconciled rows=%d\n", label,
+                f$Series_A[1], f$Series_B[1], nrow(dd), sum(dd$Status == "DIFFERS"), nrow(g)))
+  }
+  session$setInputs(tr_kind = "S", tr_search = "neocortex"); cat(sprintf("[%s] brain-structure pairs matching 'neocortex'=%d\n", label, nrow(tr_filtered())))
 })
