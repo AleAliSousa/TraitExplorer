@@ -520,7 +520,9 @@ HARMONIZED_SOURCES <- list(
   list("__merging_sensory/taste_long.csv",                      "Taste performance",       "merge"),
   list("__merging_behaviour/social_mirror_play_long.csv",       "Social composition, mirror tests & play", "merge"),
   list("__merging_volumes/claustrum_cerebellar_long.csv",       "Claustrum & cerebellar anatomy", "merge"),
-  list("__merging_body_ecology/body_ecology_long.csv",          "Body & ecology",          "merge"),
+  list("__merging_body/body_long.csv",                          "Body",                    "merge"),
+  list("__merging_ecology/ecology_long.csv",                    "Ecology",                 "merge"),
+  list("__merging_life_history/life_history_long.csv",          "Life history",            "life_history"),
   list("__merging_brain_mass/brain_mass_long.csv",              "Brain mass",              "merge"),
   list("__merging_endocranial_volume/endocranial_volume_long.csv", "Endocranial volume",   "merge"),
   list("__merging_behaviour/behaviour_long.csv",                "Behaviour",               "merge"),
@@ -591,6 +593,23 @@ harmonize_one <- function(d, dataset, kind, source_col = NULL) {
       d <- d[!is.na(d$canonical_structure) & nzchar(trimws(d$canonical_structure)), , drop = FALSE]
       harmonized_frame(d$Species, dataset, paste0(d$canonical_structure, "_Mass (g)"), d$mass_g,
                        ifelse(!is.na(d$citation) & nzchar(d$citation), d$citation, d$source), "g")
+    },
+    life_history = {
+      # Port of the Evo-M1 app's std_life_history() (__ShinyApp/app.R): only
+      # the five measures that used to reach this app via body_ecology,
+      # relabelled onto their existing labels; the merge's other measures
+      # (incl. adult_body_mass_g) stay out, as they did before the split.
+      lab <- c(gestation_d            = "Gestation (days)",
+               weaning_age_d          = "Weaning_age (days)",
+               litter_size_n          = "Litter_size (count)",
+               maximum_longevity_y    = "Maximum_longevity (yr)",
+               female_maturity_age_d  = "Female_sexual_maturity (days)")
+      unt <- c(gestation_d = "days", weaning_age_d = "days",
+               litter_size_n = "count", maximum_longevity_y = "yr",
+               female_maturity_age_d = "days")
+      d <- d[d$Measure %in% names(lab), , drop = FALSE]
+      harmonized_frame(d$Species, dataset, unname(lab[d$Measure]), d$Value,
+                       paste0(dataset, " merge: ", d$Teams), unname(unt[d$Measure]))
     },
     NULL)
 }
