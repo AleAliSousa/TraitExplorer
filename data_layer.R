@@ -420,16 +420,67 @@ load_specimen_system <- function(tree, force = FALSE) {
 # TRAIT DATA LOADER (HARMONIZED MERGES)
 # --------------------------------------------------
 
-load_trait_data <- function(tree, force = FALSE) {
+# Reads the ONE table the database feeds to the apps, __compiled/
+# compiled_long.csv.gz (built in the data repo by __compiled/build_compiled.R;
+# the Evo-M1 app reads the same file). Every trait value TraitExplorer shows in
+# Trait Search, Species Coverage, Structure Profile and Trait Reconciliation
+# comes from it. There is no fallback: if the file cannot be fetched or is not
+# that table, stop and say so.
+COMPILED_FEED <- "__compiled/compiled_long.csv.gz"
+COMPILED_COLS <- c(Species = "character", Dataset = "character", Variable = "character",
+                   Value = "character", Value_num = "numeric", Source = "character",
+                   Items = "character", Source_details = "character", Teams = "character",
+                   N_sources = "integer", Variable_raw = "character", Unit = "character",
+                   Unit_raw = "character", population_verdict = "character",
+                   domain = "character", measure_class = "character")
+
+load_compiled_feed <- function(force = FALSE) {
+  from <- if (USING_LOCAL_REPO) LOCAL_REPO_DIR else paste0(GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH)
+  p <- gh_fetch(COMPILED_FEED, force = force)
+  if (is.null(p))
+    stop("Could not fetch ", COMPILED_FEED, " from ", from, ". TraitExplorer takes every trait value ",
+         "from that one file; it is built in the data repo by __compiled/build_compiled.R.", call. = FALSE)
+  d <- tryCatch(read.csv(p, colClasses = COMPILED_COLS, check.names = FALSE, stringsAsFactors = FALSE),
+                error = function(e) conditionMessage(e))
+  if (!is.data.frame(d) || !nrow(d) || !all(names(COMPILED_COLS) %in% names(d)))
+    stop(COMPILED_FEED, " from ", from, " is not the compiled table (", if (is.data.frame(d))
+         paste0(nrow(d), " rows; columns needed: ", paste(names(COMPILED_COLS), collapse = ", ")) else d,
+         ").", call. = FALSE)
+  d[names(COMPILED_COLS)]
+}
+
+# Merge folders the Region Comparison table is still built from (see
+# build_region_table() for why it cannot come from the compiled table).
+REGION_DOMAINS <- c("cellcounts", "cell_counts_isotropic_fractionator", "volumes", "weights",
+                    "cerebral_metabolic_rate", "GLI", "cortical_areas", "cell_morphology",
+                    "cortical_layers")
+
+load_trait_data <- function(tree, compiled, force = FALSE) {
+  # Trait Search and Species Coverage: the compiled table. "Domain" is the
+  # dataset (the merge a value came from); Category and Measure_class are the
+  # table's two category columns (_keys/variable_definitions.csv).
+  domain_tables <- split(compiled, compiled$Dataset)
+  domain_tables <- lapply(domain_tables, function(d) { rownames(d) <- NULL; d })
+  combined_df <- data.frame(
+    Domain = compiled$Dataset, Category = compiled$domain, Measure_class = compiled$measure_class,
+    Species = compiled$Species, Variable = compiled$Variable, Value = compiled$Value,
+    Units = ifelse(is.na(compiled$Unit), "", compiled$Unit), Source = compiled$Source,
+    stringsAsFactors = FALSE
+  )
+  # Species names in the compiled table are already harmonised through
+  # _keys/species_display_aliases.csv by the builder.
+  species_keys <- load_species_keys(force)
+  combined_search_blob <- make_fast_search_blob(combined_df)
+
+  # Region Comparison: unchanged route. The per-domain merge tables it needs
+  # are found in the repository listing by folder name, as before.
   blob_paths <- gh_blob_paths(tree)
   top_level <- vapply(strsplit(blob_paths, "/", fixed = TRUE), `[`, character(1), 1)
   merge_dirs <- sort(unique(top_level[!is.na(top_level) & startsWith(top_level, "__merging")]))
-
-  domain_tables <- list()
-  combined_list <- list()
-
+  region_tables <- list()
   for (dir in merge_dirs) {
     domain <- sub("^__merging_", "", dir)
+    if (!domain %in% REGION_DOMAINS) next
     dir_files <- blob_paths[startsWith(blob_paths, paste0(dir, "/"))]
 
     preferred <- file.path(dir, paste0(domain, "_long.csv"))
@@ -447,41 +498,12 @@ load_trait_data <- function(tree, force = FALSE) {
 
     d <- read_gh_csv(long_file, force)
     if (nrow(d) == 0) next
-    domain_tables[[domain]] <- d
-
-    sp_col  <- grep("^species$", names(d), ignore.case = TRUE, value = TRUE)
-    var_col <- grep("^(variable|measure|standardized_term|canonical_structure)$", names(d), ignore.case = TRUE, value = TRUE)
-    val_col <- grep("^(value|gi|mass_g|gli_pct)$", names(d), ignore.case = TRUE, value = TRUE)
-    unit_col <- grep("^units?$", names(d), ignore.case = TRUE, value = TRUE)
-    src_col <- grep("^(source|teams?|sources)$", names(d), ignore.case = TRUE, value = TRUE)
-
-    comb_df <- data.frame(
-      Domain = domain,
-      Species = if (length(sp_col)) as.character(d[[sp_col[[1]]]]) else "",
-      Variable = if (length(var_col)) as.character(d[[var_col[[1]]]]) else "",
-      Value = if (length(val_col)) as.character(d[[val_col[[1]]]]) else "",
-      Units = if (length(unit_col)) as.character(d[[unit_col[[1]]]]) else "",
-      Source = if (length(src_col)) as.character(d[[src_col[[1]]]]) else "",
-      stringsAsFactors = FALSE
-    )
-    combined_list[[length(combined_list) + 1L]] <- comb_df
+    region_tables[[domain]] <- d
   }
-
-  combined_df <- if (length(combined_list)) do.call(rbind, combined_list) else data.frame()
-
-  # Harmonised species name next to the printed one, so the Species filter,
-  # Species Coverage and the Region Comparison agree on what one species is.
-  species_keys <- load_species_keys(force)
-  if (nrow(combined_df)) {
-    combined_df$Species_printed <- combined_df$Species
-    combined_df$Species <- harmonize_species(combined_df$Species, species_keys)
-    combined_df <- combined_df[, c("Domain", "Species", "Variable", "Value", "Units", "Source", "Species_printed")]
-  }
-  combined_search_blob <- make_fast_search_blob(combined_df)
 
   anatomy_keys <- load_anatomy_keys(force)
   region_tbl <- tryCatch(
-    build_region_table(domain_tables, anatomy_keys, species_keys),
+    build_region_table(region_tables, anatomy_keys, species_keys),
     error = function(e) {
       message("Region table could not be built: ", conditionMessage(e))
       # keep the reason so the Region Comparison tab can show it
@@ -503,145 +525,19 @@ load_trait_data <- function(tree, force = FALSE) {
 # HARMONIZED VALUES (Evo-M1 app labels) -- for the Structure Profile and
 # Trait Reconciliation tabs
 # --------------------------------------------------
-# A port of the Evo-M1 app's load_compiled() (__ShinyApp/app.R): the same
-# merge files, the same filters and the same variable labels, so that
-# _keys/variable_definitions.csv (which is keyed on those labels) classifies
-# every value here exactly as it does in the Evo-M1 app. One deliberate
-# difference: the supersede step (_keys/variable_canonical.csv) is NOT
-# applied. TraitExplorer shows the raw columns beside the merge that
-# supersedes them, because seeing both is the point of reconciliation; the
-# decision on record is shown next to each pair instead.
-# If a loader in app.R changes, change it here too.
+# The values are the compiled table itself: the same rows, labels and datasets
+# the Evo-M1 app shows, because both apps read the one file. TraitExplorer no
+# longer carries a port of the app's loader or reads a feed list. One
+# consequence: the compiled table has the supersede step
+# (_keys/variable_canonical.csv) applied, so a raw trait-table column that a
+# merge supersedes is shown under the merge's label, or not at all where the
+# merge covers the species; the decision on record is still shown next to
+# each pair.
 
-# The list of merge files is NOT kept here. It is _keys/app_feeds.csv in the
-# data repo, the same list the Evo-M1 app takes its table paths from: one row
-# per feed, and the rows with traitexplorer = TRUE are loaded here, in file
-# order (where a label occurs in two feeds, the first one names its dataset).
-# Columns used: path, te_label (the Dataset name shown) and te_loader, a
-# harmonize_one() kind, with the source column after a colon where the kind
-# needs one ("std:Teams"). To add, move or drop a domain, edit that file; a new
-# kind of table still needs its own case in harmonize_one().
-HARMONIZED_FEEDS <- "_keys/app_feeds.csv"
-
-# Returns list(path, dataset label, kind[, source column]) per feed. There is no
-# built-in fallback list: if the file cannot be fetched or lacks a column, stop
-# and say so, rather than show the tabs with some or all domains missing.
-load_harmonized_sources <- function(force = FALSE) {
-  need <- c("path", "traitexplorer", "te_label", "te_loader")
-  p <- gh_fetch(HARMONIZED_FEEDS, force = force)
-  feeds <- if (is.null(p)) NULL else tryCatch(
-    read.csv(p, stringsAsFactors = FALSE, check.names = FALSE, colClasses = "character"),
-    error = function(e) NULL)
-  from <- if (USING_LOCAL_REPO) LOCAL_REPO_DIR else paste0(GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH)
-  if (is.null(feeds) || !all(need %in% names(feeds)))
-    stop("Could not read the feed list ", HARMONIZED_FEEDS, " from ", from,
-         if (is.null(feeds)) " (not found or unreadable)." else
-           paste0(" (columns needed: ", paste(need, collapse = ", "), ")."),
-         " TraitExplorer takes the list of merge files it loads from that file.", call. = FALSE)
-  feeds <- feeds[toupper(trimws(feeds$traitexplorer)) == "TRUE", , drop = FALSE]
-  if (!nrow(feeds))
-    stop("The feed list ", HARMONIZED_FEEDS, " from ", from, " has no row with traitexplorer = TRUE.",
-         call. = FALSE)
-  lapply(seq_len(nrow(feeds)), function(i)
-    c(list(trimws(feeds$path[i]), trimws(feeds$te_label[i])),
-      as.list(strsplit(trimws(feeds$te_loader[i]), ":", fixed = TRUE)[[1]])))
-}
-
-harmonized_frame <- function(species, dataset, label, value, source, unit = NA_character_) {
-  value <- as.character(value)
-  data.frame(Species = as.character(species), Dataset = dataset, Variable = as.character(label),
-             Value = value, Value_num = suppressWarnings(as.numeric(value)),
-             Source = as.character(source), Unit = as.character(unit),
-             stringsAsFactors = FALSE)
-}
-
-harmonize_one <- function(d, dataset, kind, source_col = NULL) {
-  if (!nrow(d)) return(NULL)
-  col <- function(nm) if (nm %in% names(d)) d[[nm]] else rep(NA, nrow(d))
-  switch(kind,
-    std = harmonized_frame(d$Species, dataset, d$Variable, d$Value, col(source_col)),
-    merge = {
-      if (dataset == "Brain mass") {
-        d <- d[d$Measure != "Brain_Mass_mass_or_volume", , drop = FALSE]
-        d$Measure[d$Measure == "Brain_Mass_from_volume_or_ecv"] <- "Brain_Mass_estimated_from_volume"
-      }
-      harmonized_frame(d$Species, dataset, paste0(d$Measure, " (", d$Units, ")"), d$Value,
-                       paste0(dataset, " merge: ", d$Teams), d$Units)
-    },
-    cmr = harmonized_frame(d$Species, dataset, paste0(d$Region, "_", d$Measure, " (", d$Units, ")"),
-                           d$Value, paste0("CMR merge: ", d$Compilations), d$Units),
-    gli = harmonized_frame(d$Species, dataset, paste0("GLI_", d$area_as_published, "_", d$stratum, " (%)"),
-                           d$GLI_pct, d$source, "%"),
-    cortical_areas = {
-      d <- d[!is.na(d$status) & d$status == "active", , drop = FALSE]
-      harmonized_frame(d$Species, dataset, d$Standardized_Term, d$value, d$source)
-    },
-    cortical_layers = {
-      d <- d[!is.na(d$merge_default) & as.logical(d$merge_default) & !is.na(d$value), , drop = FALSE]
-      meas <- ifelse(d$measure == "absolute thickness", "Thickness_abs", "Thickness_prop")
-      layer <- gsub("[^A-Za-z0-9]+", "_", d$layer)
-      harmonized_frame(d$Species, dataset, paste0("M1_Layer", layer, "_", meas, " (", d$unit, ")"),
-                       d$value, d$source, d$unit)
-    },
-    cell_morphology = {
-      d <- d[!is.na(d$merge_default) & as.logical(d$merge_default) &
-               d$statistic %in% c("mean", "estimate", "value", "category") &
-               !is.na(d$taxon_level) & d$taxon_level == "species", , drop = FALSE]
-      val <- ifelse(!is.na(d$value), as.character(d$value), as.character(d$value_text))
-      keep <- !is.na(val) & nzchar(val)
-      d <- d[keep, , drop = FALSE]; val <- val[keep]
-      out <- harmonized_frame(d$Species, dataset, paste0(d$variable_label, " (", d$unit, ")"),
-                              val, d$source, d$unit)
-      out$Value_num <- suppressWarnings(as.numeric(d$value))
-      out
-    },
-    gyrification = harmonized_frame(d$Species, dataset, rep("GI", nrow(d)), d$GI, d$source, "ratio"),
-    sensory = harmonized_frame(d$Species, dataset, d$Measure, d$Value,
-                               ifelse(!is.na(d$Sources) & nzchar(d$Sources), d$Sources, dataset), d$Units),
-    weights = {
-      d <- d[!is.na(d$canonical_structure) & nzchar(trimws(d$canonical_structure)), , drop = FALSE]
-      harmonized_frame(d$Species, dataset, paste0(d$canonical_structure, "_Mass (g)"), d$mass_g,
-                       ifelse(!is.na(d$citation) & nzchar(d$citation), d$citation, d$source), "g")
-    },
-    life_history = {
-      # Port of the Evo-M1 app's std_life_history() (__ShinyApp/app.R): only
-      # the five measures that used to reach this app via body_ecology,
-      # relabelled onto their existing labels; the merge's other measures
-      # (incl. adult_body_mass_g) stay out, as they did before the split.
-      lab <- c(gestation_d            = "Gestation (days)",
-               weaning_age_d          = "Weaning_age (days)",
-               litter_size_n          = "Litter_size (count)",
-               maximum_longevity_y    = "Maximum_longevity (yr)",
-               female_maturity_age_d  = "Female_sexual_maturity (days)")
-      unt <- c(gestation_d = "days", weaning_age_d = "days",
-               litter_size_n = "count", maximum_longevity_y = "yr",
-               female_maturity_age_d = "days")
-      d <- d[d$Measure %in% names(lab), , drop = FALSE]
-      harmonized_frame(d$Species, dataset, unname(lab[d$Measure]), d$Value,
-                       paste0(dataset, " merge: ", d$Teams), unname(unt[d$Measure]))
-    },
-    NULL)
-}
-
-load_harmonized_values <- function(force = FALSE) {
-  parts <- lapply(load_harmonized_sources(force), function(s) {
-    d <- read_gh_csv(s[[1]], force)
-    out <- tryCatch(harmonize_one(d, s[[2]], s[[3]], if (length(s) > 3) s[[4]] else NULL),
-             error = function(e) {
-               message("Harmonized values: skipped ", s[[1]], " (", conditionMessage(e), ")")
-               NULL
-             })
-    # a listed feed that yields nothing (file missing or empty, unknown kind) is said, not silent
-    if (is.null(out)) message("Harmonized values: nothing loaded for ", s[[2]], " from ", s[[1]])
-    out
-  })
-  values <- do.call(rbind, parts[!vapply(parts, is.null, logical(1))])
-  if (is.null(values)) values <- harmonized_frame(character(0), character(0), character(0), character(0), character(0))
-  aliases <- read_gh_csv("_keys/species_display_aliases.csv", force)
-  if (nrow(aliases) && all(c("variant", "canonical") %in% names(aliases))) {
-    hit <- match(values$Species, aliases$variant)
-    values$Species[!is.na(hit)] <- aliases$canonical[hit[!is.na(hit)]]
-  }
+load_harmonized_values <- function(compiled, force = FALSE) {
+  values <- data.frame(Species = compiled$Species, Dataset = compiled$Dataset, Variable = compiled$Variable,
+                       Value = compiled$Value, Value_num = compiled$Value_num,
+                       Source = compiled$Source, Unit = compiled$Unit, stringsAsFactors = FALSE)
   values <- values[!is.na(values$Value) & nzchar(values$Value) & values$Value != "NA", , drop = FALSE]
   vardef <- read_gh_csv("_keys/variable_definitions.csv", force)
   canon  <- read_gh_csv("_keys/variable_canonical.csv", force)
@@ -832,6 +728,11 @@ load_anatomy_keys <- function(force = FALSE) {
   )
 }
 
+# This table is NOT built from the compiled table (__compiled/compiled_long.csv.gz),
+# because it cannot be with the same result: it uses every row of the per-domain
+# merge tables and columns the compiled table does not carry (region, layer,
+# cell_type, stratum and canonical_structure as separate fields; the per-row n).
+# The compiled table keeps only each merge's default rows under composed labels.
 build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
   vd <- anatomy_keys$variable_domain
   ax <- anatomy_keys$anatomy_crosswalk
@@ -1013,18 +914,19 @@ build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
 # Runs the whole GitHub-only pipeline. force_tree re-lists the repo (picks up
 # added/removed/renamed files); force_content also re-downloads every fixed
 # file load_specimen_system()/load_trait_data() read (crosswalks, paper
-# tables, the ~17 per-domain _long.csv merges, markdown notes) -- a few dozen
+# tables, the compiled table, the merges behind the region table, markdown notes) -- a few dozen
 # small requests, fast enough to run on every refresh. It does NOT bulk
 # re-fetch the Repository Explorer's file contents; those are pulled lazily,
 # one at a time, only when a user clicks Download.
 load_all_data <- function(force_tree = FALSE, force_content = FALSE) {
   tree <- gh_list_tree(force = force_tree)
+  compiled <- load_compiled_feed(force = force_content)
   list(
     tree = tree,
     index_tbl = build_index(tree),
     specimen_data = load_specimen_system(tree, force = force_content),
-    trait_data = load_trait_data(tree, force = force_content),
-    harmonized = load_harmonized_values(force = force_content),
+    trait_data = load_trait_data(tree, compiled, force = force_content),
+    harmonized = load_harmonized_values(compiled, force = force_content),
     loaded_at = Sys.time()
   )
 }
