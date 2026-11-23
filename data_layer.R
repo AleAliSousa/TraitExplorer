@@ -432,7 +432,7 @@ COMPILED_COLS <- c(Species = "character", Dataset = "character", Variable = "cha
                    Items = "character", Source_details = "character", Teams = "character",
                    N_sources = "integer", Variable_raw = "character", Unit = "character",
                    Unit_raw = "character", population_verdict = "character",
-                   domain = "character", measure_class = "character")
+                   domain = "character", measure_class = "character", Subspecies = "character")
 
 load_compiled_feed <- function(force = FALSE) {
   from <- if (USING_LOCAL_REPO) LOCAL_REPO_DIR else paste0(GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH)
@@ -463,7 +463,8 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
   domain_tables <- lapply(domain_tables, function(d) { rownames(d) <- NULL; d })
   combined_df <- data.frame(
     Domain = compiled$Dataset, Category = compiled$domain, Measure_class = compiled$measure_class,
-    Species = compiled$Species, Variable = compiled$Variable, Value = compiled$Value,
+    Species = compiled$Species, Subspecies = compiled$Subspecies,
+    Variable = compiled$Variable, Value = compiled$Value,
     Units = ifelse(is.na(compiled$Unit), "", compiled$Unit), Source = compiled$Source,
     stringsAsFactors = FALSE
   )
