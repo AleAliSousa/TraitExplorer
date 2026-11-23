@@ -513,30 +513,39 @@ load_trait_data <- function(tree, force = FALSE) {
 # decision on record is shown next to each pair instead.
 # If a loader in app.R changes, change it here too.
 
-HARMONIZED_SOURCES <- list(
-  list("__merging_volumes/volumes_long.csv",                    "Brain-structure volumes", "std",  "Teams"),
-  list("__merging_cellcounts/cellcounts_long.csv",              "Cell counts",             "std",  "Source"),
-  list("__ShinyApp/data/evom1_traits_long.csv",                 "EvoM1 traits",            "std",  "Source"),
-  list("__merging_sensory/taste_long.csv",                      "Taste performance",       "merge"),
-  list("__merging_behaviour/social_mirror_play_long.csv",       "Social composition, mirror tests & play", "merge"),
-  list("__merging_volumes/claustrum_cerebellar_long.csv",       "Claustrum & cerebellar anatomy", "merge"),
-  list("__merging_body/body_long.csv",                          "Body",                    "merge"),
-  list("__merging_ecology/ecology_long.csv",                    "Ecology",                 "merge"),
-  list("__merging_life_history/life_history_long.csv",          "Life history",            "life_history"),
-  list("__merging_brain_mass/brain_mass_long.csv",              "Brain mass",              "merge"),
-  list("__merging_endocranial_volume/endocranial_volume_long.csv", "Endocranial volume",   "merge"),
-  list("__merging_behaviour/behaviour_long.csv",                "Behaviour",               "merge"),
-  list("__merging_cerebellar_folding/cerebellar_folding_long.csv", "Cerebellar folding",   "merge"),
-  list("__merging_cerebral_metabolic_rate/cerebral_metabolic_rate_long.csv", "Cerebral metabolic rate", "cmr"),
-  list("__merging_GLI/GLI_long.csv",                            "Grey-level index",        "gli"),
-  list("__merging_cortical_areas/cortical_areas_long.csv",      "Cortical areas & surfaces", "cortical_areas"),
-  list("__merging_cortical_layers/cortical_layers_m1_long.csv", "Cortical layer thickness", "cortical_layers"),
-  list("__merging_cell_morphology/cell_morphology_long.csv",    "Cell type, size & morphology", "cell_morphology"),
-  list("__merging_gyrification/gyrification_long.csv",          "Gyrification (GI)",       "gyrification"),
-  list("__merging_sensory/sensory_long.csv",                    "Sensory performance",     "sensory"),
-  list("__merging_weights/weights_long.csv",                    "Brain-part weights",      "weights"),
-  list("__merging_supplementary/supplementary_long.csv",        "Supplementary sources",   "merge")
-)
+# The list of merge files is NOT kept here. It is _keys/app_feeds.csv in the
+# data repo, the same list the Evo-M1 app takes its table paths from: one row
+# per feed, and the rows with traitexplorer = TRUE are loaded here, in file
+# order (where a label occurs in two feeds, the first one names its dataset).
+# Columns used: path, te_label (the Dataset name shown) and te_loader, a
+# harmonize_one() kind, with the source column after a colon where the kind
+# needs one ("std:Teams"). To add, move or drop a domain, edit that file; a new
+# kind of table still needs its own case in harmonize_one().
+HARMONIZED_FEEDS <- "_keys/app_feeds.csv"
+
+# Returns list(path, dataset label, kind[, source column]) per feed. There is no
+# built-in fallback list: if the file cannot be fetched or lacks a column, stop
+# and say so, rather than show the tabs with some or all domains missing.
+load_harmonized_sources <- function(force = FALSE) {
+  need <- c("path", "traitexplorer", "te_label", "te_loader")
+  p <- gh_fetch(HARMONIZED_FEEDS, force = force)
+  feeds <- if (is.null(p)) NULL else tryCatch(
+    read.csv(p, stringsAsFactors = FALSE, check.names = FALSE, colClasses = "character"),
+    error = function(e) NULL)
+  from <- if (USING_LOCAL_REPO) LOCAL_REPO_DIR else paste0(GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH)
+  if (is.null(feeds) || !all(need %in% names(feeds)))
+    stop("Could not read the feed list ", HARMONIZED_FEEDS, " from ", from,
+         if (is.null(feeds)) " (not found or unreadable)." else
+           paste0(" (columns needed: ", paste(need, collapse = ", "), ")."),
+         " TraitExplorer takes the list of merge files it loads from that file.", call. = FALSE)
+  feeds <- feeds[toupper(trimws(feeds$traitexplorer)) == "TRUE", , drop = FALSE]
+  if (!nrow(feeds))
+    stop("The feed list ", HARMONIZED_FEEDS, " from ", from, " has no row with traitexplorer = TRUE.",
+         call. = FALSE)
+  lapply(seq_len(nrow(feeds)), function(i)
+    c(list(trimws(feeds$path[i]), trimws(feeds$te_label[i])),
+      as.list(strsplit(trimws(feeds$te_loader[i]), ":", fixed = TRUE)[[1]])))
+}
 
 harmonized_frame <- function(species, dataset, label, value, source, unit = NA_character_) {
   value <- as.character(value)
@@ -615,13 +624,16 @@ harmonize_one <- function(d, dataset, kind, source_col = NULL) {
 }
 
 load_harmonized_values <- function(force = FALSE) {
-  parts <- lapply(HARMONIZED_SOURCES, function(s) {
+  parts <- lapply(load_harmonized_sources(force), function(s) {
     d <- read_gh_csv(s[[1]], force)
-    tryCatch(harmonize_one(d, s[[2]], s[[3]], if (length(s) > 3) s[[4]] else NULL),
+    out <- tryCatch(harmonize_one(d, s[[2]], s[[3]], if (length(s) > 3) s[[4]] else NULL),
              error = function(e) {
                message("Harmonized values: skipped ", s[[1]], " (", conditionMessage(e), ")")
                NULL
              })
+    # a listed feed that yields nothing (file missing or empty, unknown kind) is said, not silent
+    if (is.null(out)) message("Harmonized values: nothing loaded for ", s[[2]], " from ", s[[1]])
+    out
   })
   values <- do.call(rbind, parts[!vapply(parts, is.null, logical(1))])
   if (is.null(values)) values <- harmonized_frame(character(0), character(0), character(0), character(0), character(0))
@@ -879,6 +891,9 @@ build_region_table <- function(domain_tables, anatomy_keys, species_keys) {
   }
 
   d <- domain_tables[["cellcounts"]]
+  # load_trait_data() names a domain after its merge folder, and the folder was
+  # renamed in 2026-11; the region-table tag and the anatomy keys stay "cellcounts".
+  if (is.null(d)) d <- domain_tables[["cell_counts_isotropic_fractionator"]]
   if (!is.null(d) && nrow(d)) {
     lk <- vd_lookup("Cell counts", d$Variable)
     # A variable added upstream before variable_domain.csv catches up is not

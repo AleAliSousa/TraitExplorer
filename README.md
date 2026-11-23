@@ -43,6 +43,7 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 - Candidate pairs of variables that look like the same trait from different sources (same structure + measurement + unit + life-stage/sex scope, or the same name once the author-year tag is removed), with shared species, median ratio, % within 1% / 10% and a verdict.
 - Pair detail (species-by-species values and a DIFFERS flag at a tolerance you set) and a Reconciled view (every source per species, a precedence order you choose, first available wins, source of each value named). Decisions in `_keys/variable_canonical.csv` are shown; nothing is pooled or edited.
 - Labels match the Evo-M1 app (`load_harmonized_values()` in `data_layer.R` ports its `load_compiled()`), except that raw trait-table columns are not superseded here, so they can be compared with the merges that replace them.
+- Which merge files feed these two tabs is not listed in the code: `data_layer.R` reads `_keys/app_feeds.csv` from the data repo (rows with `traitexplorer = TRUE`; 25 on 2026-11-23), the same list the Evo-M1 app takes its table paths from. To add, move or drop a domain, edit that file in Evo-M1-Trait-Data and push. If the list cannot be fetched the app stops with an error saying so.
 
 ### 3. Repository Explorer
 - Browse and search repository files by study, author, file type, and year.
@@ -104,6 +105,8 @@ source("run_app.R")
 ## Deploying to the web
 
 TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Because TraitExplorer reads its data straight from GitHub at runtime, deploying only ever uploads the app code (`app.R`, `data_layer.R`, `structure_reconcile.R`, `config.R`) -- a live TraitExplorer always sees current GitHub data with no redeploy needed for a pure data change.
+
+`_keys/app_feeds.csv` must be on the data repo's branch before a `data_layer.R` that reads it is deployed; otherwise the app stops at start-up.
 
 - **macOS** -- double-click **`Deploy_TraitExplorer.command`** in the repo root
 - Or, from a terminal: `Rscript deploy_traitexplorer.R`
