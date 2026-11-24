@@ -14,6 +14,8 @@ setwd(app_dir)
 env <- new.env(); suppressMessages(sys.source("app.R", envir = env))
 sx <- env$initial_data$specimen_data$crosswalk
 cat(sprintf("[%s] specimens=%d accepted_name present=%d basis=%s region_rows=%d\n", label, nrow(sx), sum(!is.na(sx$accepted_name)), paste(names(table(sx$taxon_resolution_basis)), collapse="/"), nrow(env$initial_data$trait_data$region)))
+ts <- env$initial_data$trait_data$combined
+cat(sprintf("[%s] trait search rows=%d Hemispheres column=%s doubled=%d one hemisphere=%d\n", label, nrow(ts), "Hemispheres" %in% names(ts), sum(grepl("2 x one hemisphere", ts$Hemispheres)), sum(grepl("^one hemisphere", ts$Hemispheres))))
 rb_err <- attr(env$initial_data$trait_data$region, "build_error")
 if (!is.null(rb_err)) cat(sprintf("[%s] REGION TABLE BUILD ERROR: %s\n", label, rb_err))
 rb_miss <- attr(env$initial_data$trait_data$region, "missing_columns")
@@ -38,6 +40,10 @@ testServer(env$server, {
   cat(sprintf("[%s] home_counts renders=%s\n", label, !is.null(output$home_counts)))
   session$setInputs(coverage_species="Homo sapiens"); cat(sprintf("[%s] coverage domains human=%d\n", label, nrow(coverage_summary())))
   session$setInputs(ex_region=1); cat(sprintf("[%s] example button ok\n", label))
+  # trait search: a doubled value is found by its Hemispheres note and the inspector names it
+  session$setInputs(trait_domain="All Domains (Combined)", trait_column="Hemispheres", trait_search="doubled", trait_limit=1000)
+  tr <- trait_results(); session$setInputs(trait_table_rows_selected = 1L)
+  cat(sprintf("[%s] search 'doubled' in Hemispheres=%d inspector shows the note=%s\n", label, attr(tr, "match_count"), nrow(tr) > 0 && grepl("Hemispheres: </strong>", paste(unlist(output$trait_detail_card), collapse = " "), fixed = TRUE)))
 })
 # Inspector sweep: one row per (kind, has concept, match class) plus every taxon-conflict row
 testServer(env$server, {

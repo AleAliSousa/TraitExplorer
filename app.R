@@ -1181,10 +1181,19 @@ server <- function(input, output, session) {
     dat <- trait_results()
     if (!length(idx) || !nrow(dat) || idx > nrow(dat)) return(NULL)
     sel <- dat[idx, ]
+    # Hemispheres: a doubled or one-hemisphere value is said to be one at the
+    # top of the card, with the same species' value on the other footing.
+    hemi <- sr_hemi_col(sel)
+    also <- if (nzchar(hemi) && all(c("Species", "Variable", "Value") %in% names(sel)))
+      sr_hemi_partners(rv$trait_data$combined, sel) else character(0)
 
     div(
       class = "specimen-card",
       h5("Selected Record Inspector", style = "font-weight: 700; color: #1e3a8a;"),
+      if (nzchar(hemi)) div(class = "conflict-alert", style = "margin-bottom: 8px;",
+        strong("Hemispheres: "), hemi,
+        if (length(also)) tagList(tags$br(), span(class = "small-note", "Same species, other footing: ",
+                                                  paste(also, collapse = " | ")))),
       div(class = "row",
         lapply(names(sel), function(col) {
           val <- as.character(sel[[col]])
@@ -1757,8 +1766,8 @@ server <- function(input, output, session) {
     rows <- utils::head(unique(foc$Row[order(-foc$y)]), input$bs_top)
     p <- p[p$Row %in% rows, , drop = FALSE]
     p$Row <- factor(p$Row, levels = rev(rows))
-    p$hover <- sprintf("%s<br>%s<br>%s: %s %s<br>%s", p$Species, p$Row, p$Variable,
-                       signif(p$Value, 4), p$Unit, p$Dataset)
+    p$hover <- sprintf("%s<br>%s<br>%s: %s %s%s<br>%s", p$Species, p$Row, p$Variable,
+                       signif(p$Value, 4), p$Unit, sr_hemi_suffix(sr_hemi_col(p)), p$Dataset)
     plotly::plot_ly(p, x = ~y, y = ~Row, color = ~Species, type = "bar", orientation = "h",
                     text = ~hover, hoverinfo = "text") |>
       plotly::layout(barmode = "group",

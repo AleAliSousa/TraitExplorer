@@ -433,6 +433,11 @@ COMPILED_COLS <- c(Species = "character", Dataset = "character", Variable = "cha
                    N_sources = "integer", Variable_raw = "character", Unit = "character",
                    Unit_raw = "character", population_verdict = "character",
                    domain = "character", measure_class = "character", Subspecies = "character")
+# Columns kept when the table has them and filled with "" when it does not, so
+# an older table still loads (they are not in colClasses, which would warn
+# about an absent column). Hemispheres (added 2026-11-23) says that a value
+# is 2 x one hemisphere (doubled), or one hemisphere as measured.
+COMPILED_OPTIONAL <- c(Hemispheres = "character")
 
 load_compiled_feed <- function(force = FALSE) {
   from <- if (USING_LOCAL_REPO) LOCAL_REPO_DIR else paste0(GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH)
@@ -446,7 +451,12 @@ load_compiled_feed <- function(force = FALSE) {
     stop(COMPILED_FEED, " from ", from, " is not the compiled table (", if (is.data.frame(d))
          paste0(nrow(d), " rows; columns needed: ", paste(names(COMPILED_COLS), collapse = ", ")) else d,
          ").", call. = FALSE)
-  d[names(COMPILED_COLS)]
+  for (cl in names(COMPILED_OPTIONAL)) {
+    if (!cl %in% names(d)) d[[cl]] <- rep("", nrow(d))
+    d[[cl]] <- as.character(d[[cl]])
+    d[[cl]][is.na(d[[cl]])] <- ""
+  }
+  d[c(names(COMPILED_COLS), names(COMPILED_OPTIONAL))]
 }
 
 # Merge folders the Region Comparison table is still built from (see
@@ -463,7 +473,7 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
   domain_tables <- lapply(domain_tables, function(d) { rownames(d) <- NULL; d })
   combined_df <- data.frame(
     Domain = compiled$Dataset, Category = compiled$domain, Measure_class = compiled$measure_class,
-    Species = compiled$Species, Subspecies = compiled$Subspecies,
+    Species = compiled$Species, Subspecies = compiled$Subspecies, Hemispheres = compiled$Hemispheres,
     Variable = compiled$Variable, Value = compiled$Value,
     Units = ifelse(is.na(compiled$Unit), "", compiled$Unit), Source = compiled$Source,
     stringsAsFactors = FALSE
@@ -538,7 +548,8 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
 load_harmonized_values <- function(compiled, force = FALSE) {
   values <- data.frame(Species = compiled$Species, Dataset = compiled$Dataset, Variable = compiled$Variable,
                        Value = compiled$Value, Value_num = compiled$Value_num,
-                       Source = compiled$Source, Unit = compiled$Unit, stringsAsFactors = FALSE)
+                       Source = compiled$Source, Unit = compiled$Unit,
+                       Hemispheres = compiled$Hemispheres, stringsAsFactors = FALSE)
   values <- values[!is.na(values$Value) & nzchar(values$Value) & values$Value != "NA", , drop = FALSE]
   vardef <- read_gh_csv("_keys/variable_definitions.csv", force)
   canon  <- read_gh_csv("_keys/variable_canonical.csv", force)
