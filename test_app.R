@@ -44,6 +44,12 @@ testServer(env$server, {
   session$setInputs(trait_domain="All Domains (Combined)", trait_column="Hemispheres", trait_search="doubled", trait_limit=1000)
   tr <- trait_results(); session$setInputs(trait_table_rows_selected = 1L)
   cat(sprintf("[%s] search 'doubled' in Hemispheres=%d inspector shows the note=%s\n", label, attr(tr, "match_count"), nrow(tr) > 0 && grepl("Hemispheres: </strong>", paste(unlist(output$trait_detail_card), collapse = " "), fixed = TRUE)))
+  # trait search by category: Domain, then Measure class; the source dataset is a provenance filter
+  td <- rv$trait_data; doms <- sort(unique(td$combined$Domain)); ds_all <- names(td$dataset_tables)
+  session$setInputs(trait_column="All fields", trait_search="", trait_limit=50000)
+  n_dom <- vapply(doms, function(d) { session$setInputs(trait_domain=d, trait_class="All measure classes", trait_dataset="All source datasets"); attr(trait_results(), "match_count") }, numeric(1))
+  n_ds <- vapply(ds_all, function(d) { session$setInputs(trait_domain="All Domains (Combined)", trait_dataset=d); attr(trait_results(), "match_count") }, numeric(1))
+  cat(sprintf("[%s] domains=%d rows by domain sum=%d | source datasets=%d rows by dataset sum=%d | a dataset named as a domain=%d\n", label, length(doms), sum(n_dom), length(ds_all), sum(n_ds), sum(doms %in% ds_all)))
 })
 # Inspector sweep: one row per (kind, has concept, match class) plus every taxon-conflict row
 testServer(env$server, {

@@ -465,17 +465,39 @@ REGION_DOMAINS <- c("cellcounts", "cell_counts_isotropic_fractionator", "volumes
                     "cerebral_metabolic_rate", "GLI", "cortical_areas", "cell_morphology",
                     "cortical_layers")
 
+# Display names for source datasets: _keys/dataset_labels.csv (Dataset,
+# display_label, note) in the data repo. Where the app lists datasets, a dataset
+# with a row there is shown under its display_label; one without a row, or a
+# missing key, under its own name. Returns a named vector, Dataset -> label.
+load_dataset_labels <- function(force = FALSE) {
+  k <- read_gh_csv("_keys/dataset_labels.csv", force)
+  if (!nrow(k) || !all(c("Dataset", "display_label") %in% names(k))) return(setNames(character(0), character(0)))
+  k <- k[!is.na(k$Dataset) & !is.na(k$display_label), , drop = FALSE]
+  setNames(as.character(k$display_label), k$Dataset)
+}
+dataset_display <- function(x, labels) {
+  d <- unname(labels[as.character(x)])
+  ifelse(is.na(d) | !nzchar(d), as.character(x), d)
+}
+# A category value as shown: a blank one is named, as in the Evo-M1 app.
+category_value <- function(x, blank) { x <- as.character(x); x[is.na(x) | !nzchar(x)] <- blank; x }
+
 load_trait_data <- function(tree, compiled, force = FALSE) {
-  # Trait Search and Species Coverage: the compiled table. "Domain" is the
-  # dataset (the merge a value came from); Category and Measure_class are the
-  # table's two category columns (_keys/variable_definitions.csv).
-  domain_tables <- split(compiled, compiled$Dataset)
-  domain_tables <- lapply(domain_tables, function(d) { rownames(d) <- NULL; d })
+  # Trait Search and Species Coverage: the compiled table. Variables are found
+  # and grouped by its two category columns, shown as "Domain" and
+  # "Measure_class" (domain and measure_class of _keys/variable_definitions.csv).
+  # "Dataset" is the merge a value came from: provenance. It stays as a column
+  # and as a filter (dataset_tables: one full-column table per source dataset)
+  # and is never used as a category.
+  dataset_tables <- split(compiled, compiled$Dataset)
+  dataset_tables <- lapply(dataset_tables, function(d) { rownames(d) <- NULL; d })
   combined_df <- data.frame(
-    Domain = compiled$Dataset, Category = compiled$domain, Measure_class = compiled$measure_class,
+    Domain = category_value(compiled$domain, "Unclassified"),
+    Measure_class = category_value(compiled$measure_class, "other"),
     Species = compiled$Species, Subspecies = compiled$Subspecies, Hemispheres = compiled$Hemispheres,
     Variable = compiled$Variable, Value = compiled$Value,
     Units = ifelse(is.na(compiled$Unit), "", compiled$Unit), Source = compiled$Source,
+    Dataset = compiled$Dataset,
     stringsAsFactors = FALSE
   )
   # Species names in the compiled table are already harmonised through
@@ -523,7 +545,8 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
   )
 
   list(
-    domain_tables = domain_tables,
+    dataset_tables = dataset_tables,
+    dataset_labels = load_dataset_labels(force),
     combined = combined_df,
     search_blob = combined_search_blob,
     species_keys = species_keys,

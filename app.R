@@ -65,8 +65,27 @@ message(
   "  Files indexed: ", nrow(initial_data$index_tbl), "\n",
   "  Specimen records: ", nrow(initial_data$specimen_data$crosswalk), "\n",
   "  Trait records: ", nrow(initial_data$trait_data$combined), " across ",
-  length(initial_data$trait_data$domain_tables), " domains"
+  length(unique(initial_data$trait_data$combined$Domain)), " domains (from ",
+  length(initial_data$trait_data$dataset_tables), " source datasets)"
 )
+
+# Trait Search pickers. Variables are found by category: Domain, then Measure
+# class. The source dataset (the merge a value came from) is a provenance
+# filter, listed under its display name (_keys/dataset_labels.csv).
+TRAIT_ALL_DOMAINS  <- "All Domains (Combined)"
+TRAIT_ALL_CLASSES  <- "All measure classes"
+TRAIT_ALL_DATASETS <- "All source datasets"
+trait_domain_choices <- function(td) c(TRAIT_ALL_DOMAINS, sort(unique(td$combined$Domain)))
+trait_class_choices <- function(td, dom = TRAIT_ALL_DOMAINS) {
+  cls <- if (identical(dom, TRAIT_ALL_DOMAINS)) td$combined$Measure_class
+         else td$combined$Measure_class[td$combined$Domain == dom]
+  c(TRAIT_ALL_CLASSES, sort(unique(cls)))
+}
+trait_dataset_choices <- function(td) {
+  ds <- names(td$dataset_tables)
+  ds <- setNames(ds, dataset_display(ds, td$dataset_labels))
+  c(TRAIT_ALL_DATASETS, ds[order(names(ds))])
+}
 
 # --------------------------------------------------
 # UI
@@ -311,11 +330,12 @@ ui <- fluidPage(
             "Search traits / records",
             placeholder = "Pan troglodytes sleep M1 cerebellum..."
           ),
-          selectInput(
-            "trait_domain",
-            "Domain / Merge",
-            choices = c("All Domains (Combined)", sort(names(initial_data$trait_data$domain_tables)))
-          ),
+          selectInput("trait_domain", "Domain", choices = trait_domain_choices(initial_data$trait_data)),
+          selectInput("trait_class", "Measure class", choices = trait_class_choices(initial_data$trait_data)),
+          selectInput("trait_dataset", "Source dataset (merge)",
+                      choices = trait_dataset_choices(initial_data$trait_data)),
+          p(class = "small-note", "Find variables by domain and measure class. A source dataset is where a ",
+            "value came from, not a category; choosing one shows all of its columns."),
           selectInput("trait_column", "Search within", choices = "All fields"),
           numericInput("trait_limit", "Maximum rows", value = 1000, min = 50, max = 50000, step = 50),
           actionButton("reset_trait_filters", "Reset filters", class = "btn btn-sm btn-outline-secondary"),
@@ -603,8 +623,9 @@ server <- function(input, output, session) {
       choices = names(rv$specimen_data$paper_tables))
     updateSelectInput(session, "dossier_select",
       choices = names(rv$specimen_data$notes))
-    updateSelectInput(session, "trait_domain",
-      choices = c("All Domains (Combined)", sort(names(rv$trait_data$domain_tables))))
+    updateSelectInput(session, "trait_domain", choices = trait_domain_choices(rv$trait_data))
+    updateSelectInput(session, "trait_class", choices = trait_class_choices(rv$trait_data))
+    updateSelectInput(session, "trait_dataset", choices = trait_dataset_choices(rv$trait_data))
 
     updateSelectInput(session, "file_extension",
       choices = c("All", sort(unique(rv$index_tbl$extension[rv$index_tbl$extension != ""]))))
@@ -1092,32 +1113,54 @@ server <- function(input, output, session) {
 
   # ---- Trait Search Tab ----
   observe({
-    dom <- input$trait_domain %||% "All Domains (Combined)"
-    if (dom == "All Domains (Combined)") {
+    ds <- input$trait_dataset %||% TRAIT_ALL_DATASETS
+    if (ds == TRAIT_ALL_DATASETS) {
       cols <- c("All fields", names(rv$trait_data$combined))
-    } else if (dom %in% names(rv$trait_data$domain_tables)) {
-      cols <- c("All fields", names(rv$trait_data$domain_tables[[dom]]))
+    } else if (ds %in% names(rv$trait_data$dataset_tables)) {
+      cols <- c("All fields", names(rv$trait_data$dataset_tables[[ds]]))
     } else {
       cols <- "All fields"
     }
     updateSelectInput(session, "trait_column", choices = cols)
   })
+  # the measure classes of the chosen domain
+  observe({
+    cls <- trait_class_choices(rv$trait_data, input$trait_domain %||% TRAIT_ALL_DOMAINS)
+    keep <- isolate(input$trait_class %||% TRAIT_ALL_CLASSES)
+    updateSelectInput(session, "trait_class", choices = cls,
+                      selected = if (keep %in% cls) keep else TRAIT_ALL_CLASSES)
+  })
 
   observeEvent(input$reset_trait_filters, {
     updateTextInput(session, "trait_search", value = "")
-    updateSelectInput(session, "trait_domain", selected = "All Domains (Combined)")
+    updateSelectInput(session, "trait_domain", selected = TRAIT_ALL_DOMAINS)
+    updateSelectInput(session, "trait_class", selected = TRAIT_ALL_CLASSES)
+    updateSelectInput(session, "trait_dataset", selected = TRAIT_ALL_DATASETS)
     updateSelectInput(session, "trait_column", selected = "All fields")
     updateNumericInput(session, "trait_limit", value = 1000)
   })
 
   trait_results <- reactive({
-    dom <- input$trait_domain
-    dat <- if (dom == "All Domains (Combined)") {
+    dom <- input$trait_domain %||% TRAIT_ALL_DOMAINS
+    cls <- input$trait_class %||% TRAIT_ALL_CLASSES
+    ds <- input$trait_dataset %||% TRAIT_ALL_DATASETS
+    # Rows: every dataset (the combined columns), or one source dataset (all
+    # of its columns). Then the category filters: Domain, then Measure class.
+    whole <- ds == TRAIT_ALL_DATASETS
+    dat <- if (whole) {
       rv$trait_data$combined
-    } else if (dom %in% names(rv$trait_data$domain_tables)) {
-      rv$trait_data$domain_tables[[dom]]
+    } else if (ds %in% names(rv$trait_data$dataset_tables)) {
+      rv$trait_data$dataset_tables[[ds]]
     } else {
       data.frame()
+    }
+    in_cat <- rep(TRUE, nrow(dat))
+    if (nrow(dat)) {
+      d_dom <- if (whole) dat$Domain else category_value(dat$domain, "Unclassified")
+      d_cls <- if (whole) dat$Measure_class else category_value(dat$measure_class, "other")
+      if (dom != TRAIT_ALL_DOMAINS) in_cat <- in_cat & d_dom == dom
+      if (cls != TRAIT_ALL_CLASSES) in_cat <- in_cat & d_cls == cls
+      dat <- dat[in_cat, , drop = FALSE]
     }
 
     if (!nrow(dat)) {
@@ -1134,7 +1177,7 @@ server <- function(input, output, session) {
 
     # Search within specific column or all fields
     if (input$trait_column == "All fields" || !input$trait_column %in% names(dat)) {
-      blob <- if (dom == "All Domains (Combined)") rv$trait_data$search_blob else make_fast_search_blob(dat)
+      blob <- if (whole) rv$trait_data$search_blob[in_cat] else make_fast_search_blob(dat)
       keep <- match_terms(blob, query)
     } else {
       col_val <- tolower(ifelse(is.na(dat[[input$trait_column]]), "", as.character(dat[[input$trait_column]])))
@@ -1154,7 +1197,12 @@ server <- function(input, output, session) {
     tagList(
       strong(format(total, big.mark = ",")),
       " matching trait records in ",
-      strong(input$trait_domain),
+      strong(paste(c(
+        input$trait_domain %||% TRAIT_ALL_DOMAINS,
+        if (!identical(input$trait_class %||% TRAIT_ALL_CLASSES, TRAIT_ALL_CLASSES)) input$trait_class,
+        if (!identical(input$trait_dataset %||% TRAIT_ALL_DATASETS, TRAIT_ALL_DATASETS))
+          paste0("source dataset: ", dataset_display(input$trait_dataset, rv$trait_data$dataset_labels))),
+        collapse = " > ")),
       if (total > nrow(dat)) paste0(" (displaying first ", format(nrow(dat), big.mark = ","), ")") else NULL
     )
   })
@@ -1231,6 +1279,7 @@ server <- function(input, output, session) {
       summarise(
         n_variables = n_distinct(Variable),
         n_records = n(),
+        classes = paste(sort(unique(Measure_class)), collapse = "; "),
         variables = paste(sort(unique(Variable)), collapse = "; "),
         .groups = "drop"
       ) %>%
@@ -1252,7 +1301,7 @@ server <- function(input, output, session) {
     tagList(
       strong(sp, style = "font-style: italic;"), " -- ",
       strong(format(sum(dat$n_variables), big.mark = ",")), " distinct variables across ",
-      strong(nrow(dat)), " of ", strong(length(rv$trait_data$domain_tables)), " domains",
+      strong(nrow(dat)), " of ", strong(length(unique(rv$trait_data$combined$Domain))), " domains",
       " (", format(sum(dat$n_records), big.mark = ","), " total records)"
     )
   })
@@ -1273,8 +1322,8 @@ server <- function(input, output, session) {
     if (!nrow(dat)) return(datatable(data.frame(Message = "No data for this species.")))
     datatable(
       dat %>%
-        transmute(Domain = Domain, Variables = n_variables, Records = n_records,
-                  `Variable Names` = variables),
+        transmute(Domain = Domain, `Measure classes` = classes, Variables = n_variables,
+                  Records = n_records, `Variable Names` = variables),
       rownames = FALSE, filter = "top",
       options = list(pageLength = 20, scrollX = TRUE)
     )
@@ -1286,13 +1335,15 @@ server <- function(input, output, session) {
     comb <- rv$trait_data$combined
     rg <- rv$trait_data$region
     n_species <- length(species_choices_from(comb$Species))
-    n_dom <- length(rv$trait_data$domain_tables)
+    n_dom <- length(unique(comb$Domain))
+    n_ds <- length(rv$trait_data$dataset_tables)
     n_spec <- length(unique(rv$specimen_data$crosswalk$canonical_specimen))
     n_regions <- if (nrow(rg)) length(unique(rg$Concept)) else 0
     tagList(
       span(class = "stat-pill", paste0(format(nrow(comb), big.mark = ","), " trait values")),
       span(class = "stat-pill", paste0(n_species, " species")),
-      span(class = "stat-pill", paste0(n_dom, " data domains")),
+      span(class = "stat-pill", paste0(n_dom, " trait domains")),
+      span(class = "stat-pill", paste0(n_ds, " source datasets (merges)")),
       span(class = "stat-pill", paste0(format(n_spec, big.mark = ","), " individual specimens tracked")),
       span(class = "stat-pill", paste0(n_regions, " brain-region concepts")),
       span(class = "stat-pill", paste0(format(nrow(rv$index_tbl), big.mark = ","), " source files")),
@@ -1310,7 +1361,9 @@ server <- function(input, output, session) {
   })
   observeEvent(input$ex_trait, {
     updateTabsetPanel(session, "main_tabs", selected = "Trait Search")
-    updateSelectInput(session, "trait_domain", selected = "All Domains (Combined)")
+    updateSelectInput(session, "trait_domain", selected = TRAIT_ALL_DOMAINS)
+    updateSelectInput(session, "trait_class", selected = TRAIT_ALL_CLASSES)
+    updateSelectInput(session, "trait_dataset", selected = TRAIT_ALL_DATASETS)
     updateTextInput(session, "trait_search", value = "Pan troglodytes Cerebellum_Vol")
   })
   observeEvent(input$ex_region, {
@@ -1745,7 +1798,7 @@ server <- function(input, output, session) {
     n_multi <- length(unique(foc$Structure[foc$Same_structure_rows > 1]))
     tagList(
       strong(em(input$bs_species)), ": ", strong(length(unique(foc$Structure))),
-      " structures, values in ", strong(foc$Unit[1]), ", from ", length(unique(foc$Dataset)), " dataset(s).",
+      " structures, values in ", strong(foc$Unit[1]), ", from ", length(unique(foc$Dataset)), " source dataset(s).",
       if (nz1(input$bs_ref)) tagList(" Shown as % of ", code(input$bs_ref), "."),
       if (n_multi) div(class = "conflict-alert", style = "margin-top:8px;",
         strong(n_multi), " structure(s) are reported by more than one variable or dataset; ",
@@ -1761,13 +1814,14 @@ server <- function(input, output, session) {
     p <- p[is.finite(p$y) & (!isTRUE(input$bs_log) | p$y > 0), , drop = FALSE]
     validate(need(nrow(p) > 0, "Nothing to plot (no reference value, or no positive values on a log axis)."))
     nser <- tapply(paste(p$Variable, p$Dataset), p$Structure, function(x) length(unique(x)))
-    p$Row <- ifelse(nser[p$Structure] > 1, paste0(p$Structure, " [", p$Variable, " | ", p$Dataset, "]"), p$Structure)
+    p$Row <- ifelse(nser[p$Structure] > 1, paste0(p$Structure, " [", p$Variable, " | ", dataset_display(p$Dataset, rv$trait_data$dataset_labels), "]"), p$Structure)
     foc <- p[p$Species == input$bs_species, , drop = FALSE]
     rows <- utils::head(unique(foc$Row[order(-foc$y)]), input$bs_top)
     p <- p[p$Row %in% rows, , drop = FALSE]
     p$Row <- factor(p$Row, levels = rev(rows))
     p$hover <- sprintf("%s<br>%s<br>%s: %s %s%s<br>%s", p$Species, p$Row, p$Variable,
-                       signif(p$Value, 4), p$Unit, sr_hemi_suffix(sr_hemi_col(p)), p$Dataset)
+                       signif(p$Value, 4), p$Unit, sr_hemi_suffix(sr_hemi_col(p)),
+                       dataset_display(p$Dataset, rv$trait_data$dataset_labels))
     plotly::plot_ly(p, x = ~y, y = ~Row, color = ~Species, type = "bar", orientation = "h",
                     text = ~hover, hoverinfo = "text") |>
       plotly::layout(barmode = "group",
