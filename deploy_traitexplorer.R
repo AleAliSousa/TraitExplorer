@@ -3,11 +3,10 @@
 #
 # Deploys TraitExplorer to shinyapps.io.
 #
-# TraitExplorer has no local data of its own to push -- it reads
-# Evo-M1-Trait-Data straight from GitHub at runtime (see data_layer.R), so
-# the live app always sees current GitHub data with no redeploy needed for
-# a pure data change. Redeploy only when app.R, data_layer.R,
-# structure_reconcile.R or config.R themselves change.
+# Public data comes from Evo-M1-Trait-Data on GitHub at runtime (see
+# data_layer.R). The optional Neuron methods module reads a restricted local
+# directory when configured, but its CSVs must never be uploaded. Redeploy
+# only when app source code changes, not for a pure public-data change.
 #
 # First-time setup (once per computer):
 #   1. Log into https://www.shinyapps.io -> Account -> Tokens -> Show ->
@@ -46,12 +45,12 @@ rsconnect::deployApp(
   appDir = app_dir,
   appName = "TraitExplorer",
   appTitle = "TraitExplorer",
-  appFiles = c("app.R", "data_layer.R", "structure_reconcile.R", "config.R"),
+  appFiles = c("app.R", "data_layer.R", "neuron_methods.R", "structure_reconcile.R", "config.R"),
   forceUpdate = TRUE
 )
 
 message(
   "Done. TraitExplorer reads Evo-M1-Trait-Data live from GitHub, so a pure\n",
   "data change on GitHub needs no redeploy -- only a change to app.R,\n",
-  "data_layer.R, or config.R does."
+  "data_layer.R, neuron_methods.R, structure_reconcile.R, or config.R does."
 )

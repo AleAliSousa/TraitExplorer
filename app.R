@@ -3,10 +3,10 @@
 # with first-class specimen tracking, comparative trait search, region and
 # structure-profile comparison within a species, and cross-source trait reconciliation.
 #
-# Data access: TraitExplorer never reads a local Evo-M1-Trait-Data checkout.
-# Every table is fetched from GitHub (see data_layer.R) and cached under
-# .gh_cache/ next to this file. Click "Refresh data from GitHub" in the app,
-# or run `Rscript refresh_cache.R`, to pick up dataset changes.
+# Public data is fetched from GitHub (see data_layer.R) and cached under
+# .gh_cache/ next to this file. The optional Neuron methods tab reads the
+# restricted comparison CSVs directly from TRAIT_NEURON_COMPARISON_DIR; they never enter
+# the public feed or GitHub cache.
 
 required_packages <- c("shiny", "DT", "dplyr", "stringr", "plotly")
 
@@ -52,15 +52,57 @@ if (file.exists(config_path)) source(config_path, local = TRUE)
 # isn't visible, and CACHE_DIR's `file.path(app_dir, ...)` default errors
 # with "object 'app_dir' not found".
 source(file.path(app_dir, "data_layer.R"), local = TRUE)
+source(file.path(app_dir, "neuron_methods.R"), local = TRUE)
 
 # --------------------------------------------------
 # INITIALIZE DATA
 # --------------------------------------------------
 
 initial_data <- load_all_data()
+initial_neuron_methods <- load_neuron_methods()
+if (nzchar(Sys.getenv("TRAIT_NEURON_COMPARISON_DIR", unset = "")))
+  message(initial_neuron_methods$message)
+# Build picker choices column by column. Whole-cortex and V1 files may gain
+# different optional columns, so they need not have identical schemas.
+nm_sources <- sort(unique(c(initial_neuron_methods$whole$source, initial_neuron_methods$v1$source)))
+nm_methods <- sort(unique(c(initial_neuron_methods$whole$lab_method, initial_neuron_methods$v1$lab_method)))
+nm_species <- sort(unique(c(initial_neuron_methods$whole$species, initial_neuron_methods$v1$species,
+                            initial_neuron_methods$pairs$species)))
+nm_sex_values <- sort(unique(c("Not reported", nm_demographic_display(c(
+  initial_neuron_methods$whole$sex_as_published,
+  initial_neuron_methods$v1$sex_as_published
+)))))
+nm_age_group_values <- sort(unique(c("Not reported", nm_demographic_display(c(
+  initial_neuron_methods$whole$age_group,
+  initial_neuron_methods$v1$age_group
+)))))
+nm_roles <- unique(c("primary", sort(setdiff(unique(c(initial_neuron_methods$whole$plot_role,
+                                                    initial_neuron_methods$v1$plot_role)), "primary"))))
+nm_method_colors <- function(methods) {
+  known <- c("HH IF" = "#2563eb", "Kaas IF/flow" = "#b45309", "Stereology" = "#059669")
+  extra <- setdiff(sort(unique(methods)), names(known))
+  if (length(extra)) c(known, stats::setNames(grDevices::hcl.colors(length(extra), "Dark 3"), extra))
+  else known
+}
+nm_charvet_colors <- function(labels) {
+  known <- c(
+    "Giannaris measured individual" = "#047857",
+    "Giannaris measured cohort mean" = "#047857",
+    "Collins mass-inferred V1" = "#b45309",
+    "Collins V1 map pending signoff" = "#d97706",
+    "Suner count-only hemisphere" = "#2563eb",
+    "Suner count-only cohort mean" = "#2563eb",
+    "Historical mixed-species count" = "#7c3aed",
+    "Occipital proxy (not exact V1)" = "#64748b",
+    "Excluded nine-piece diagnostic" = "#dc2626"
+  )
+  extra <- setdiff(sort(unique(labels)), names(known))
+  if (length(extra)) c(known, stats::setNames(grDevices::hcl.colors(length(extra), "Dark 3"), extra))
+  else known
+}
 
 message(
-  "TraitExplorer ready (GitHub-only: ", GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH, "):\n",
+  "TraitExplorer ready (public data: ", GITHUB_OWNER, "/", GITHUB_REPO, "@", GITHUB_BRANCH, "):\n",
   "  Cache dir: ", CACHE_DIR, "\n",
   "  Files indexed: ", nrow(initial_data$index_tbl), "\n",
   "  Specimen records: ", nrow(initial_data$specimen_data$crosswalk), "\n",
@@ -172,6 +214,7 @@ ui <- fluidPage(
           tags$li(strong("Trait Search"), " -- look up compiled species-level values (volumes, cell counts, metabolic rates, behaviour, sleep ...). Click a row to see every field."),
           tags$li(strong("Species Coverage"), " -- for one species, how much of each domain is filled in."),
           tags$li(strong("Region Comparison"), " -- within one species, plot one regional measurement against another across brain regions; or for one region, across species."),
+          if (isTRUE(initial_neuron_methods$enabled)) tags$li(strong("Neuron methods"), " -- inspect source-level primate cortex and V1 counts, plus descriptive comparisons to HH."),
           tags$li(strong("Repository Explorer"), " -- browse the source files behind the numbers and open them on GitHub.")
         ),
         div(class = "rule-box",
@@ -526,6 +569,106 @@ ui <- fluidPage(
       )
     ),
     # ========================================================
+    # OPTIONAL LOCAL VIEW: SOURCE-LEVEL NEURON METHODS
+    # ========================================================
+    if (isTRUE(initial_neuron_methods$enabled)) tabPanel(
+      "Neuron methods",
+      value = "neuron_methods",
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          radioButtons("nm_view", "View", choices = c(
+            "Whole cortex, neurons per hemisphere" = "whole",
+            "Other source / HH ratio" = "ratio",
+            "V1, neurons per hemisphere" = "v1",
+            if (isTRUE(initial_neuron_methods$charvet_enabled))
+              c("Charvet Figure 7 reassessment" = "charvet")
+          ), selected = "whole"),
+          conditionalPanel("input.nm_view != 'charvet'",
+            selectizeInput("nm_source", "Source paper (comparison numerator in ratio view)",
+              choices = nm_sources, multiple = TRUE,
+              options = list(placeholder = "All sources")),
+            selectizeInput("nm_method", "Method group (comparison numerator in ratio view)",
+              choices = nm_methods, multiple = TRUE,
+              options = list(placeholder = "All methods")),
+            selectizeInput("nm_species", "Taxon", choices = nm_species, multiple = TRUE,
+              options = list(placeholder = "All taxa")),
+            selectInput("nm_sex", "Sex as published (ratio numerator in ratio view)",
+              choices = c("All" = "All", stats::setNames(nm_sex_values, nm_sex_values)),
+              selected = "All"),
+            selectInput("nm_age_group", "Age group (ratio numerator in ratio view)",
+              choices = c("All" = "All", stats::setNames(nm_age_group_values, nm_age_group_values)),
+              selected = "All"),
+            checkboxGroupInput("nm_roles", "Observation roles", choices = nm_roles,
+              selected = "primary"),
+            selectInput("nm_quality", "Quality / shared specimen",
+              choices = c("All" = "all", "Unflagged only" = "uncaveated",
+                          "Flagged or shared specimen only" = "caveated"),
+              selected = "all"),
+            p(class = "small-note", "Primary normal observations are selected by default. Check another role to inspect reused values, duplicate records, individual cohort components, alternative counts, or epilepsy cases. Individual components overlap their cohort summaries. Non-V1 proxy rows can appear in the table but are never plotted as V1. Age and sex may describe a source cohort rather than every specimen; inspect the demographic source locus. Not reported means no source-backed value was found.")
+          ),
+          conditionalPanel("input.nm_view == 'charvet'",
+            checkboxInput("nm_charvet_diagnostic", "Show excluded nine-piece Collins diagnostic", FALSE),
+            p(class = "small-note", "The seven-piece Collins V1 map is visually inferred and awaits human signoff. The nine-piece candidate includes non-V1 pieces and is hidden by default.")
+          ),
+          hr(),
+          downloadButton("nm_download", "Download filtered rows (CSV)",
+            class = "btn btn-sm btn-primary btn-download"),
+          width = 3
+        ),
+        mainPanel(
+          conditionalPanel("input.nm_view != 'charvet'",
+            div(class = "status-box", uiOutput("nm_status")),
+            conditionalPanel("input.nm_view == 'whole' || input.nm_view == 'ratio'",
+              div(class = "rule-box",
+                strong("Anatomical boundaries differ: "),
+                "For rhesus, ",
+                tags$a("HH2007", href = "https://pmc.ncbi.nlm.nih.gov/articles/PMC1805542/",
+                       target = "_blank", rel = "noopener noreferrer"),
+                " includes hippocampus and piriform cortex in its cerebral-cortex preparation. ",
+                tags$a("Collins 2010", href = "https://pmc.ncbi.nlm.nih.gov/articles/PMC2936588/",
+                       target = "_blank", rel = "noopener noreferrer"),
+                " reports a dissected cortical sheet; its exact gray/white and allocortical boundary is not documented. ",
+                "These scopes are not established as matched; the boundary difference alone does not explain the count gap or provide a correction factor. For baboons, ",
+                tags$a("HH2008", href = "https://pmc.ncbi.nlm.nih.gov/articles/PMC2527956/",
+                       target = "_blank", rel = "noopener noreferrer"),
+                " says hippocampus was excluded, while the general ",
+                tags$a("Gabi2010", href = "https://pmc.ncbi.nlm.nih.gov/articles/PMC2980814/",
+                       target = "_blank", rel = "noopener noreferrer"),
+                " description includes it; treat that reused-cohort boundary as uncertain. ",
+                "Inspect each row's anatomical scope and source link before interpreting a ratio."
+              )
+            ),
+            plotly::plotlyOutput("nm_plot", height = "540px"),
+            p(class = "small-note", "Hollow circles mark caveats or shared specimens; hollow squares mark individual components, and hollow diamonds mark other context rows. Select a table row for the source link and full specimen details."),
+            DTOutput("nm_table"),
+            uiOutput("nm_detail"),
+            div(class = "rule-box",
+              strong("Interpretation: "),
+              "Counts refer to one measured or inferred hemisphere. HH2007, Gabi2010, and Azevedo2009 bilateral means were divided by two; Collins, Young, and Turner values were not doubled. Cortex boundaries, tissue scopes, cohorts, and methods vary. Other-source/HH ratios describe different cohorts and are not a universal method correction. ",
+              "Mass, surface area, and volume appear only when reported for that row's sampled structure; blank fields mean no matching measurement. Giannaris 2012 has paired measured V1 volumes for individuals; Suner 1996 has individual counts but no corresponding individual V1 volumes. Collins 2016's 344 g is whole-brain mass, not chimp neocortex. Suner used a 3D optical disector density × volume method, not an optical fractionator. O'Kusky 1982 is a mixed-macaque historical estimate, not an exact species match."
+            )
+          ),
+          conditionalPanel("input.nm_view == 'charvet'",
+            div(class = "status-box", uiOutput("nm_charvet_status")),
+            h4("A. Neuron count and volume basis"),
+            plotly::plotlyOutput("nm_charvet_volume_plot", height = "520px"),
+            p(class = "small-note", "Giannaris points have paired measured V1 counts and Cavalieri volumes. Collins x coordinates are inferred from V1 mass using 1.036 g/cm³. Christensen is processed occipital cortex, not exact V1. Suner and O'Kusky have no paired V1 volume, so they appear only in panel B."),
+            h4("B. Counts with and without reported volume"),
+            plotly::plotlyOutput("nm_charvet_count_plot", height = "430px"),
+            p(class = "small-note", "Cohort means and their individual components overlap; the symbols and hover identify each. Suner's ten hemispheres come from five animals. This between-cohort contrast is not a method correction."),
+            h4("Figure 7 source audit"),
+            DTOutput("nm_charvet_table"),
+            uiOutput("nm_charvet_detail"),
+            h4("Charvet 2013/2017 whole-cortex history (separate anatomy)"),
+            DTOutput("nm_charvet_history_table"),
+            uiOutput("nm_charvet_history_detail")
+          ),
+          width = 9
+        )
+      )
+    ),
+    # ========================================================
     # TAB 4: REPOSITORY EXPLORER
     # ========================================================
     tabPanel(
@@ -563,7 +706,7 @@ ui <- fluidPage(
         h3("TraitExplorer"),
         p("Interactive browser for the Evo-M1-Trait-Data comparative trait database and harmonized specimen crosswalk."),
         p(strong("Data source: "), sprintf("github.com/%s/%s@%s", GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH)),
-        p(class = "small-note", "TraitExplorer reads only from that GitHub repository -- never from a local checkout. Every table is fetched over HTTPS and cached under .gh_cache/ next to the app for speed; it is read-only over the source data."),
+        p(class = "small-note", "Public trait and specimen tables come from that GitHub repository and are cached under .gh_cache/. The optional local Neuron methods view reads separate restricted comparison CSVs directly from TRAIT_NEURON_COMPARISON_DIR when configured; those rows are never added to the public feed or cache."),
         p(class = "small-note", uiOutput("about_loaded_at", inline = TRUE)),
         hr(),
         h4("Specimen Information Architecture"),
@@ -598,6 +741,435 @@ server <- function(input, output, session) {
     harmonized = initial_data$harmonized,
     loaded_at = initial_data$loaded_at
   )
+
+  # These rows stay outside rv and load_all_data(): a public-data refresh cannot
+  # pull them into the GitHub cache, the compiled feed, or any existing tab.
+  nm_or <- function(x, default) if (is.null(x) || !length(x)) default else x
+  nm_filtered <- reactive({
+    if (identical(input$nm_view, "charvet"))
+      return(initial_neuron_methods$v1[FALSE, , drop = FALSE])
+    d <- nm_filter_view(
+      initial_neuron_methods,
+      view = nm_or(input$nm_view, "whole"),
+      sources = nm_or(input$nm_source, character()),
+      methods = nm_or(input$nm_method, character()),
+      species = nm_or(input$nm_species, character()),
+      roles = nm_or(input$nm_roles, "primary"),
+      quality = nm_or(input$nm_quality, "all")
+    )
+    nm_filter_demographics(d, nm_or(input$nm_sex, "All"),
+                           nm_or(input$nm_age_group, "All"),
+                           if (identical(input$nm_view, "ratio")) "other_" else "")
+  })
+
+  # The Christensen occipital proxy can be inspected as requested context,
+  # but it is never passed to the exact-V1 Plotly data.
+  nm_non_v1_context <- reactive({
+    empty <- initial_neuron_methods$v1[FALSE, , drop = FALSE]
+    if (!isTRUE(initial_neuron_methods$enabled) ||
+        !identical(input$nm_view, "v1") ||
+        !"region_proxy_excluded" %in% nm_or(input$nm_roles, "primary")) return(empty)
+    d <- nm_filter_observations(
+      initial_neuron_methods$v1,
+      sources = nm_or(input$nm_source, character()),
+      methods = nm_or(input$nm_method, character()),
+      species = nm_or(input$nm_species, character()),
+      roles = "region_proxy_excluded",
+      quality = nm_or(input$nm_quality, "all"),
+      conditions = "all",
+      v1_only = FALSE
+    )
+    nm_filter_demographics(d, nm_or(input$nm_sex, "All"),
+                           nm_or(input$nm_age_group, "All"))
+  })
+  nm_visible_rows <- reactive({
+    d <- nm_filtered()
+    if (identical(input$nm_view, "v1")) rbind(d, nm_non_v1_context()) else d
+  })
+  nm_charvet_data <- reactive({
+    nm_charvet_rows(initial_neuron_methods, show_diagnostic = isTRUE(input$nm_charvet_diagnostic))
+  })
+  nm_charvet_volume <- reactive({
+    d <- nm_charvet_data()
+    if (!nrow(d)) return(d)
+    d[is.finite(d$volume_mm3), , drop = FALSE]
+  })
+  nm_charvet_symbol <- function(status) {
+    symbols <- c(
+      measured_individual = "circle", exact_V1_measured = "diamond",
+      exact_V1_inferred = "circle-open", V1_map_pending_signoff = "triangle-up-open",
+      count_only_individual = "circle", count_only = "diamond",
+      legacy_count_only = "x", region_proxy = "x",
+      diagnostic_excluded = "cross"
+    )
+    out <- unname(symbols[status])
+    out[is.na(out)] <- "circle"
+    out
+  }
+
+  output$nm_status <- renderUI({
+    d <- nm_filtered()
+    view <- input$nm_view %||% "whole"
+    tagList(
+      strong(nrow(d)), " source-level ",
+      switch(view, whole = "whole-cortex observations", ratio = "between-cohort ratios",
+             v1 = "exact-V1 observations", charvet = "observations"), " shown. ",
+      if (view == "v1" && nrow(nm_non_v1_context()))
+        span(class = "small-note", nrow(nm_non_v1_context()),
+             " selected excluded-context row(s) are in the table/export only; they are not plotted as V1. "),
+      if ("individual_component" %in% nm_or(input$nm_roles, "primary"))
+        span(class = "small-note",
+             "Individual components overlap source cohort summaries and should not be counted as additional independent cohorts. "),
+      if (view == "ratio") span(class = "small-note",
+        "The numerator is a different cohort from the HH denominator. Papio matches are genus-level proxies; Cebus/Sapajus synonymy is labelled. Turner left and right hemispheres are one animal.")
+      else if (view == "v1") span(class = "small-note",
+        "Non-V1 occipital proxies, including Christensen 2007, are excluded from this plot. Miller/Collins chimp V1 rows reuse one chimpanzee.")
+      else span(class = "small-note",
+        "HH2008 and HH2015 reuse earlier cases. Young 09-27 duplicates Collins 2010; epileptic baboons have a separate condition.")
+    )
+  })
+
+  output$nm_plot <- plotly::renderPlotly({
+    d <- nm_filtered()
+    if (!nrow(d)) return(plotly::plotly_empty(type = "scatter", mode = "markers"))
+    view <- input$nm_view %||% "whole"
+    d$nm_x <- d$species
+    if (view == "ratio") {
+      d$nm_x <- ifelse(grepl("genus", d$taxon_match, ignore.case = TRUE),
+        paste0(d$species, " (genus proxy)"),
+        ifelse(grepl("Cebus/Sapajus", d$taxon_match, fixed = TRUE),
+          paste0(d$species, " (Cebus/Sapajus)"), d$species))
+    }
+    d$nm_y <- if (view == "ratio") d$other_over_hh else d$neurons / 1e6
+    d$nm_hover <- if (view == "ratio") nm_ratio_hover(d) else nm_observation_hover(d)
+    d$nm_symbol <- factor(if (view == "ratio") nm_ratio_symbol(d) else nm_observation_symbol(d),
+                          levels = c("circle", "circle-open", "square-open", "diamond-open"))
+    pl <- plotly::plot_ly(
+      d, x = ~nm_x, y = ~nm_y, color = ~lab_method,
+      colors = nm_method_colors(d$lab_method),
+      symbol = ~nm_symbol, symbols = c("circle", "circle-open", "square-open", "diamond-open"),
+      type = "scatter", mode = "markers", hovertext = ~nm_hover, hoverinfo = "text",
+      marker = list(size = 12, line = list(width = 1.5))
+    )
+    if (view == "ratio") {
+      pl <- pl %>% plotly::layout(
+        shapes = list(list(type = "line", xref = "paper", x0 = 0, x1 = 1,
+                           yref = "y", y0 = 1, y1 = 1,
+                           line = list(color = "#64748b", dash = "dash", width = 1))))
+    }
+    pl %>% plotly::layout(
+      xaxis = list(title = "Reported taxon / comparison label", tickangle = -35,
+                   categoryorder = "array", categoryarray = sort(unique(d$nm_x))),
+      yaxis = if (view == "ratio")
+        list(title = "Other source / HH neurons", type = "linear") else
+        list(title = "Neurons per hemisphere (millions)", type = "log", dtick = 1),
+      legend = list(orientation = "h", y = -0.3),
+      margin = list(t = 25, b = 135)
+    )
+  })
+
+  nm_table_data <- reactive({
+    d <- nm_visible_rows()
+    if (!nrow(d)) return(data.frame(Message = "No observations match these filters."))
+    if (identical(input$nm_view, "ratio")) {
+      data.frame(
+        Taxon = d$species,
+        `Published numerator taxon` = d$other_species_as_published,
+        `Published HH taxon` = d$hh_species_as_published,
+        `Other source` = d$other_source, `HH source` = d$hh_source,
+        `Other specimen` = d$other_specimen, `HH specimen` = d$hh_specimen,
+        `Other anatomical scope` = d$other_scope,
+        `HH anatomical scope` = d$hh_scope,
+        `Other sex` = nm_demographic_display(d$other_sex_as_published),
+        `HH sex` = nm_demographic_display(d$hh_sex_as_published),
+        `Other age` = nm_demographic_display(d$other_age_as_published),
+        `HH age` = nm_demographic_display(d$hh_age_as_published),
+        `Other age group` = nm_demographic_display(d$other_age_group),
+        `HH age group` = nm_demographic_display(d$hh_age_group),
+        `Other demographic locus` = nm_demographic_display(d$other_demographic_source_locus),
+        `HH demographic locus` = nm_demographic_display(d$hh_demographic_source_locus),
+        `Other neurons (M)` = round(d$other_neurons / 1e6, 3),
+        `HH neurons (M)` = round(d$hh_neurons / 1e6, 3),
+        Ratio = round(d$other_over_hh, 4),
+        `Taxon match` = d$taxon_match, `Quality flag` = d$quality_flag,
+        `Shared specimen` = d$other_duplicate_group,
+        check.names = FALSE
+      )
+    } else {
+      data.frame(
+        Taxon = d$species, `Published taxon` = d$species_as_published,
+        Source = d$source, Specimen = d$specimen,
+        Hemisphere = d$hemisphere_basis, Region = d$region,
+        `Anatomical scope` = d$scope,
+        `Sex as published` = nm_demographic_display(d$sex_as_published),
+        `Age as published` = nm_demographic_display(d$age_as_published),
+        `Age group` = nm_demographic_display(d$age_group),
+        `Demographic source locus` = nm_demographic_display(d$demographic_source_locus),
+        `Neurons (M)` = round(d$neurons / 1e6, 3),
+        `Method group` = d$lab_method, Role = d$plot_role,
+        Plot = ifelse(identical(input$nm_view, "v1") &
+                        (d$region != "V1" | d$plot_role == "region_proxy_excluded"),
+                      "Excluded non-V1 context", "Shown"),
+        Condition = d$condition, `Quality flag` = d$quality_flag,
+        `Shared specimen` = d$duplicate_group,
+        check.names = FALSE
+      )
+    }
+  })
+
+  output$nm_table <- renderDT({
+    datatable(nm_table_data(), rownames = FALSE, selection = "single",
+              filter = "top", options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  nm_detail_value <- function(row, field) {
+    x <- row[[field]]
+    if (is.null(x) || !length(x) || is.na(x[1]) || !nzchar(trimws(as.character(x[1]))))
+      "Not reported" else as.character(x[1])
+  }
+  nm_detail_field <- function(label, value) tags$p(strong(paste0(label, ": ")), value)
+  nm_source_link <- function(url, label) {
+    if (!grepl("^https?://", url)) return(NULL)
+    tags$a(label, href = url, target = "_blank", rel = "noopener noreferrer")
+  }
+  nm_paper_detail <- function(row, prefix, title) {
+    field <- function(name) nm_detail_value(row, paste0(prefix, name))
+    tagList(
+      h5(title),
+      nm_detail_field("Source and locus", paste(field("source"), field("source_locus"), sep = ", ")),
+      nm_detail_field("Published taxon", field("species_as_published")),
+      nm_detail_field("Specimen", field("specimen")),
+      nm_detail_field("Hemisphere", paste(field("hemisphere_basis"), field("hemisphere"), sep = "; ")),
+      nm_detail_field("Anatomical scope", field("scope")),
+      nm_detail_field("Method", field("method")),
+      nm_detail_field("Sex as published", field("sex_as_published")),
+      nm_detail_field("Age as published", field("age_as_published")),
+      nm_detail_field("Age group", field("age_group")),
+      nm_detail_field("Demographic source locus", field("demographic_source_locus")),
+      nm_source_link(field("demographic_source_url"), "Open age/sex source"),
+      if (field("age_years") != "Not reported") nm_detail_field("Age (years)", field("age_years")),
+      if (field("neuron_ci95_halfwidth") != "Not reported")
+        nm_detail_field("Neuron 95% CI half-width (neurons)", field("neuron_ci95_halfwidth")),
+      nm_detail_field("Condition", field("condition")),
+      nm_detail_field("Quality caveat", field("quality_flag")),
+      nm_detail_field("Shared specimen group", field("duplicate_group")),
+      nm_source_link(field("source_url"), "Open primary source")
+    )
+  }
+
+  output$nm_detail <- renderUI({
+    d <- nm_visible_rows()
+    idx <- input$nm_table_rows_selected
+    if (!length(idx) || !nrow(d) || idx[1] > nrow(d))
+      return(p(class = "small-note", "Select a table row for source and specimen details."))
+    row <- d[idx[1], , drop = FALSE]
+    if (identical(input$nm_view, "ratio")) {
+      div(class = "specimen-card",
+        h4(paste0(row$species, ": ", signif(row$other_over_hh, 3), "× HH")),
+        nm_detail_field("Taxon match", nm_detail_value(row, "taxon_match")),
+        nm_detail_field("Interpretation", "Descriptive ratio across different specimens/cohorts and potentially different cortical boundaries. Compare the two paper-specific anatomical scope fields above and below."),
+        nm_paper_detail(row, "other_", "Comparison numerator"),
+        hr(), nm_paper_detail(row, "hh_", "HH denominator")
+      )
+    } else {
+      div(class = "specimen-card",
+        h4(paste0(row$species, " — ", row$source)),
+        nm_paper_detail(row, "", "Observation"),
+        nm_detail_field("Region", nm_detail_value(row, "region")),
+        nm_detail_field("Neurons per hemisphere", format(row$neurons, big.mark = ",", scientific = FALSE)),
+        nm_detail_field("Observation role", nm_detail_value(row, "plot_role")),
+        nm_detail_field("Tissue mass (g)", nm_detail_value(row, "tissue_mass_g")),
+        nm_detail_field("Surface area (mm²)", nm_detail_value(row, "surface_area_mm2")),
+        nm_detail_field("Volume (mm³)", nm_detail_value(row, "volume_mm3")),
+        nm_detail_field("Source note", nm_detail_value(row, "notes"))
+      )
+    }
+  })
+
+  output$nm_download <- downloadHandler(
+    filename = function() paste0("TraitExplorer_NeuronMethods_",
+                                  input$nm_view %||% "whole", "_",
+                                  format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv"),
+    content = function(file) {
+      rows <- if (identical(input$nm_view, "charvet")) nm_charvet_data() else nm_visible_rows()
+      write.csv(rows, file, row.names = FALSE, na = "")
+    },
+    contentType = "text/csv"
+  )
+
+  output$nm_charvet_status <- renderUI({
+    d <- nm_charvet_data()
+    if (!nrow(d)) return("Focused Charvet audit is unavailable in this local directory.")
+    tagList(
+      strong(nrow(d)), " Figure 7 audit and individual rows: ",
+      sum(d$plot_status == "measured_individual"), " Giannaris paired count/volume subjects; ",
+      sum(d$plot_status == "count_only_individual"), " Suner count-only hemispheres. ",
+      if (isTRUE(input$nm_charvet_diagnostic))
+        span(style = "color:#b91c1c; font-weight:600;",
+             "The nine-piece Collins diagnostic is shown for inspection; it includes non-V1 pieces."),
+      span(class = "small-note", " The cohort means are summaries of their individual rows, not additional animals."),
+      if (nzchar(initial_neuron_methods$charvet_warning))
+        p(style = "color:#b91c1c;", initial_neuron_methods$charvet_warning)
+    )
+  })
+
+  output$nm_charvet_volume_plot <- plotly::renderPlotly({
+    d <- nm_charvet_volume()
+    if (!nrow(d)) return(plotly::plotly_empty(type = "scatter", mode = "markers"))
+    d$neuron_m <- d$neurons / 1e6
+    d$nm_hover <- nm_charvet_hover(d)
+    d$nm_symbol <- factor(nm_charvet_symbol(d$plot_status),
+      levels = c("circle", "diamond", "circle-open", "triangle-up-open", "x", "cross"))
+    plotly::plot_ly(
+      d, x = ~volume_mm3, y = ~neuron_m, color = ~status_label,
+      colors = nm_charvet_colors(d$status_label),
+      symbol = ~nm_symbol,
+      symbols = c("circle", "diamond", "circle-open", "triangle-up-open", "x", "cross"),
+      type = "scatter", mode = "markers", hovertext = ~nm_hover, hoverinfo = "text",
+      marker = list(size = 12, line = list(width = 1.5))
+    ) %>% plotly::layout(
+      xaxis = list(title = "V1 / occipital volume (mm³): measured or inferred as labelled"),
+      yaxis = list(title = "Neurons (millions)"),
+      legend = list(orientation = "h", y = -0.26),
+      margin = list(t = 25, b = 105, l = 70)
+    )
+  })
+
+  output$nm_charvet_count_plot <- plotly::renderPlotly({
+    d <- nm_charvet_data()
+    if (!nrow(d)) return(plotly::plotly_empty(type = "scatter", mode = "markers"))
+    d$neuron_m <- d$neurons / 1e6
+    d$nm_hover <- nm_charvet_hover(d)
+    d$nm_symbol <- factor(nm_charvet_symbol(d$plot_status),
+      levels = c("circle", "diamond", "circle-open", "triangle-up-open", "x", "cross"))
+    plotly::plot_ly(
+      d, x = ~neuron_m, y = ~status_label, color = ~status_label,
+      colors = nm_charvet_colors(d$status_label),
+      symbol = ~nm_symbol,
+      symbols = c("circle", "diamond", "circle-open", "triangle-up-open", "x", "cross"),
+      type = "scatter", mode = "markers", hovertext = ~nm_hover, hoverinfo = "text",
+      marker = list(size = 11, line = list(width = 1.5)), showlegend = FALSE
+    ) %>% plotly::layout(
+      xaxis = list(title = "Neurons per hemisphere (millions)"),
+      yaxis = list(title = "Evidence group", automargin = TRUE),
+      margin = list(t = 20, b = 55, l = 235)
+    )
+  })
+
+  output$nm_charvet_table <- renderDT({
+    d <- nm_charvet_data()
+    if (!nrow(d)) return(datatable(data.frame(Message = "No focused Charvet rows.")))
+    datatable(data.frame(
+      Point = d$point_id, Evidence = d$status_label,
+      Source = d$source, Specimen = d$specimen, Region = d$region,
+      `Anatomical scope` = d$scope,
+      `Sex as published` = nm_demographic_display(d$sex_as_published),
+      `Age as published` = nm_demographic_display(d$age_as_published),
+      `Age group` = nm_demographic_display(d$age_group),
+      `Demographic source locus` = nm_demographic_display(d$demographic_source_locus),
+      `Neurons (M)` = round(d$neurons / 1e6, 3),
+      `Volume (mm³)` = round(d$volume_mm3, 1),
+      `Volume basis` = d$volume_status,
+      `Source locus` = d$source_locus,
+      `Quality caveat` = d$quality_flag,
+      check.names = FALSE
+    ), rownames = FALSE, selection = "single", filter = "top",
+    options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  output$nm_charvet_detail <- renderUI({
+    d <- nm_charvet_data()
+    idx <- input$nm_charvet_table_rows_selected
+    if (!length(idx) || !nrow(d) || idx[1] > nrow(d))
+      return(p(class = "small-note", "Select an audit row for its source and measurement basis."))
+    row <- d[idx[1], , drop = FALSE]
+    div(class = "specimen-card",
+      h4(paste(row$source, row$specimen, sep = " — ")),
+      nm_detail_field("Evidence class", nm_detail_value(row, "status_label")),
+      nm_detail_field("Region", nm_detail_value(row, "region")),
+      nm_detail_field("Anatomical scope", nm_detail_value(row, "scope")),
+      nm_detail_field("Neurons", format(row$neurons, big.mark = ",", scientific = FALSE)),
+      nm_detail_field("Volume (mm³)", nm_detail_value(row, "volume_mm3")),
+      nm_detail_field("Volume basis", nm_detail_value(row, "volume_status")),
+      nm_detail_field("Method", nm_detail_value(row, "method")),
+      nm_detail_field("Hemisphere", paste(nm_detail_value(row, "hemisphere_basis"),
+                                           nm_detail_value(row, "hemisphere"), sep = "; ")),
+      nm_detail_field("Sex as published", nm_detail_value(row, "sex_as_published")),
+      nm_detail_field("Age as published", nm_detail_value(row, "age_as_published")),
+      nm_detail_field("Age group", nm_detail_value(row, "age_group")),
+      nm_detail_field("Demographic source locus", nm_detail_value(row, "demographic_source_locus")),
+      nm_source_link(nm_detail_value(row, "demographic_source_url"), "Open age/sex source"),
+      if (nm_detail_value(row, "age_years") != "Not reported")
+        nm_detail_field("Age (years)", nm_detail_value(row, "age_years")),
+      if (nm_detail_value(row, "neuron_ci95_halfwidth") != "Not reported")
+        nm_detail_field("Neuron 95% CI half-width (neurons)", nm_detail_value(row, "neuron_ci95_halfwidth")),
+      nm_detail_field("Quality caveat", nm_detail_value(row, "quality_flag")),
+      nm_detail_field("Shared group", nm_detail_value(row, "duplicate_group")),
+      nm_detail_field("Source locus/file", paste(nm_detail_value(row, "source_locus"),
+                                                  nm_detail_value(row, "source_file"), sep = "; ")),
+      nm_detail_field("Audit note", nm_detail_value(row, "notes")),
+      nm_source_link(nm_detail_value(row, "source_url"), "Open primary source")
+    )
+  })
+
+  output$nm_charvet_history_table <- renderDT({
+    d <- initial_neuron_methods$history
+    if (!nrow(d)) return(datatable(data.frame(Message = "No whole-cortex history file in this directory.")))
+    datatable(data.frame(
+      Taxon = d$taxon, Species = d$species,
+      `2013 specimen` = d$charvet2013_specimen,
+      `2013 sex` = nm_demographic_display(d$charvet2013_sex_as_published),
+      `2013 age` = nm_demographic_display(d$charvet2013_age_as_published),
+      `2013 age group` = nm_demographic_display(d$charvet2013_age_group),
+      `2017 sex` = nm_demographic_display(d$charvet2017_sex_as_published),
+      `2017 age` = nm_demographic_display(d$charvet2017_age_as_published),
+      `2017 age group` = nm_demographic_display(d$charvet2017_age_group),
+      `HH sex` = nm_demographic_display(d$hh2007_sex_as_published),
+      `HH age` = nm_demographic_display(d$hh2007_age_as_published),
+      `HH age group` = nm_demographic_display(d$hh2007_age_group),
+      `2013 neurons (M)` = round(d$charvet2013_neurons / 1e6, 3),
+      `2017 neurons (M)` = round(d$charvet2017_neurons / 1e6, 3),
+      `HH neurons (M)` = round(d$hh2007_neurons / 1e6, 3),
+      `2013 / HH` = round(d$charvet2013_over_hh, 3),
+      `2017 / HH` = round(d$charvet2017_over_hh, 3),
+      `Overlap note` = d$overlap_note,
+      check.names = FALSE
+    ), rownames = FALSE, selection = "single", filter = "top",
+    options = list(pageLength = 10, scrollX = TRUE))
+  })
+
+  output$nm_charvet_history_detail <- renderUI({
+    d <- initial_neuron_methods$history
+    idx <- input$nm_charvet_history_table_rows_selected
+    if (!length(idx) || !nrow(d) || idx[1] > nrow(d))
+      return(p(class = "small-note", "The 2013 and 2017 whole-cortex releases overlap; select a row for source links."))
+    row <- d[idx[1], , drop = FALSE]
+    div(class = "specimen-card",
+      h5(paste(row$taxon, "— overlapping whole-cortex releases")),
+      nm_detail_field("Specimen in 2013", nm_detail_value(row, "charvet2013_specimen")),
+      nm_detail_field("Overlap", nm_detail_value(row, "overlap_note")),
+      nm_detail_field("2013 sex as published", nm_detail_value(row, "charvet2013_sex_as_published")),
+      nm_detail_field("2013 age as published", nm_detail_value(row, "charvet2013_age_as_published")),
+      nm_detail_field("2013 age group", nm_detail_value(row, "charvet2013_age_group")),
+      nm_detail_field("2013 demographic locus", nm_detail_value(row, "charvet2013_demographic_source_locus")),
+      nm_source_link(nm_detail_value(row, "charvet2013_demographic_source_url"), "Open 2013 age/sex source"),
+      nm_source_link(nm_detail_value(row, "charvet2013_url"), "Charvet 2013 primary source"),
+      tags$br(),
+      nm_detail_field("2017 sex as published", nm_detail_value(row, "charvet2017_sex_as_published")),
+      nm_detail_field("2017 age as published", nm_detail_value(row, "charvet2017_age_as_published")),
+      nm_detail_field("2017 age group", nm_detail_value(row, "charvet2017_age_group")),
+      nm_detail_field("2017 demographic locus", nm_detail_value(row, "charvet2017_demographic_source_locus")),
+      nm_source_link(nm_detail_value(row, "charvet2017_demographic_source_url"), "Open 2017 age/sex source"),
+      nm_source_link(nm_detail_value(row, "charvet2017_url"), "Charvet 2017 primary source"),
+      tags$br(),
+      nm_detail_field("HH sex as published", nm_detail_value(row, "hh2007_sex_as_published")),
+      nm_detail_field("HH age as published", nm_detail_value(row, "hh2007_age_as_published")),
+      nm_detail_field("HH age group", nm_detail_value(row, "hh2007_age_group")),
+      nm_detail_field("HH demographic locus", nm_detail_value(row, "hh2007_demographic_source_locus")),
+      nm_source_link(nm_detail_value(row, "hh2007_demographic_source_url"), "Open HH age/sex source"),
+      nm_source_link(nm_detail_value(row, "hh2007_url"), "HH 2007 primary source")
+    )
+  })
 
   # Repopulates every dropdown that depends on loaded data. Called once at
   # startup and again after a refresh, so a data-shape change (a removed

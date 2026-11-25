@@ -43,7 +43,17 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 - Candidate pairs of variables that look like the same trait from different sources (same structure + measurement + unit + life-stage/sex scope, or the same name once the author-year tag is removed), with shared species, median ratio, % within 1% / 10% and a verdict.
 - Pair detail (species-by-species values and a DIFFERS flag at a tolerance you set) and a Reconciled view (every source per species, a precedence order you choose, first available wins, source of each value named). Decisions in `_keys/variable_canonical.csv` are shown; nothing is pooled or edited.
 - Labels match the Evo-M1 app (`load_harmonized_values()` in `data_layer.R` ports its `load_compiled()`), except that raw trait-table columns are not superseded here, so they can be compared with the merges that replace them.
-- Every trait value in Trait Search, Species Coverage, Structure Profile and Trait Reconciliation comes from one file, `__compiled/compiled_long.csv.gz` in the data repo (built there by `__compiled/build_compiled.R`); the Evo-M1 app reads the same file, so the two apps show the same values, labels and datasets. TraitExplorer has no loader of its own and reads no feed list. If the file cannot be fetched the app stops with an error saying so. Region Comparison is the exception: it still reads eight per-domain merge tables, because it needs their region, layer and sample-size columns, which the compiled table does not carry.
+- Every trait value in Trait Search, Species Coverage, Structure Profile and Trait Reconciliation comes from one file, `__compiled/compiled_long.csv.gz` in the data repo (built there by `__compiled/build_compiled.R`); the Evo-M1 app reads the same file, so the two apps show the same values, labels and datasets. These public compiled views have no independent feed list. If the file cannot be fetched the app stops with an error saying so. Region Comparison is the exception: it still reads eight per-domain merge tables, because it needs their region, layer and sample-size columns, which the compiled table does not carry.
+
+### 2e. Neuron methods (optional local view)
+
+- Compare source-level primate whole-cortex neurons per hemisphere, other-source/HH ratios, and **exact V1** neurons in three core interactive Plotly views. Filter by source paper, method group, taxon, source-reported sex and age group, observation role, and quality/shared-specimen status. In the ratio view the demographic filters apply to the numerator; both sides remain visible in the table and details. The table, hover, and selected-row details preserve the published taxon, specimen, hemisphere basis, anatomical scope, source-reported age and sex with their source locus, condition, caveat, duplicate group, and primary-source link. Download the filtered rows as CSV.
+- This tab appears only when `TRAIT_NEURON_COMPARISON_DIR` points to a valid local `method_comparison` directory containing `whole_cortex_observations.csv`, `paired_relative_to_hh.csv`, and `v1_observations.csv`. It also loads `whole_cortex_individual_observations.csv` and `v1_individual_observations.csv` when present. If `charvet_fig7_reassessment.csv` is valid, a fourth focused Charvet view appears; `charvet_whole_cortex_history.csv` supplies a separate overlap table when present. These files are read directly; they do not enter the public compiled feed, GitHub cache, refresh flow, or deployment bundle. With the variable unset or invalid, the public app runs as before and the tab is absent.
+- The default shows **primary normal** observations. Context, duplicate, individual-component, alternative, and epilepsy rows require an explicit role selection. Individual components overlap their published cohort summaries and are not additional independent cohorts. Hollow circles mark caveats or shared specimens, hollow squares mark individual components, and hollow diamonds mark other context rows. When `region_proxy_excluded` is selected, non-V1 context rows such as Christensen 2007's occipital-cortex proxy appear in the V1 table and export labelled "Excluded non-V1 context"; they never enter the V1 plot.
+- HH2007, Gabi2010, and Azevedo2009 published bilateral cortical means were divided by two in these input files; Collins/Young/Turner values were not doubled. HH2008 and HH2015 reuse earlier cases. Young 09-27 duplicates Collins 2010, two Turner bonnet-macaque hemispheres are one animal, and Miller/Collins chimp V1 rows reuse one chimp. *Papio* ratios are visibly genus-level proxies; original *Cebus*/*Sapajus* labels remain in details. These ratios compare different cohorts and anatomical scopes, so they are descriptive, not a universal method correction. Mass/area/volume columns are row-specific context and blank when the matching measured structure was not reported; Collins 2016's 344 g is whole-brain mass, not neocortex. Suner 1996 used a 3D optical disector density × volume method, not an optical fractionator.
+- For rhesus, [HH2007](https://pmc.ncbi.nlm.nih.gov/articles/PMC1805542/)'s cerebral cortex includes hippocampus and piriform cortex. [Collins 2010](https://pmc.ncbi.nlm.nih.gov/articles/PMC2936588/) reports a dissected cortical sheet, but its exact gray/white and allocortical border is not documented. The app exposes each row's anatomical scope and does not assume these two preparations are equivalent; the boundary difference alone does not explain the count gap or provide a correction factor. For baboons, [HH2008](https://pmc.ncbi.nlm.nih.gov/articles/PMC2527956/) says hippocampus was excluded, whereas [Gabi2010](https://pmc.ncbi.nlm.nih.gov/articles/PMC2980814/) gives a broader general definition for its reused cohort; this border remains uncertain. Source-reported sex, age or age group are shown where available; blank source fields display as “Not reported,” never as an inferred specimen value. A cohort demographic label does not automatically apply to each animal; the demographic source locus indicates its reporting level.
+- Charvet 2013 capuchin and tamarin cases are reused in Charvet 2017; its owl case contributes to a later mean with another unresolved owl. Giannaris 2012 individual V1 counts have paired measured V1 volumes, while Suner 1996's individual counts have no corresponding case-level V1 volumes; Suner's reported per-case CI half-widths are distinct from the sample SD. O'Kusky 1982's historical V1 estimate pools two macaque species and has no paired measured V1 volume.
+- The focused Charvet Figure 7 view separates paired measured Giannaris volumes, Collins volumes inferred from V1 mass / 1.036 g per cm³, count-only Suner and O'Kusky rows, and Christensen's broader occipital proxy. The Collins 2010 seven-piece V1 map (IDs 6, 7, 9–13; 220.431M neurons) is visually inferred and awaits human signoff. A nine-piece candidate containing non-V1 pieces is excluded by default and can be enabled only as a diagnostic. The 2013/2017 whole-cortex history table stays separate from the V1 plots; cohort means and their individual components are not independent samples.
 
 ### 3. Repository Explorer
 - Browse and search repository files by study, author, file type, and year.
@@ -53,7 +63,8 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 ## Files
 
 - `app.R` - Shiny application (UI + server)
-- `data_layer.R` - all data access: fetches Evo-M1-Trait-Data from GitHub, caches it locally, builds the tables the app displays. Sourced by both `app.R` and `refresh_cache.R`.
+- `data_layer.R` - public data access: fetches Evo-M1-Trait-Data from GitHub, caches it locally, builds the public tables the app displays. Sourced by both `app.R` and `refresh_cache.R`.
+- `neuron_methods.R` - optional, local-only loader and filters for the restricted Neuron methods comparison. It never uses `data_layer.R` fetch or cache helpers.
 - `structure_reconcile.R` - Structure Profile and Trait Reconciliation functions, shared with the Evo-M1 app (`__ShinyApp/structure_reconcile.R`); keep the two copies identical
 - `refresh_cache.R` - standalone script (`Rscript refresh_cache.R`) that updates the local GitHub cache without launching Shiny. Run this whenever the data repo has changed and you want the next launch to be instant.
 - `config.R` - optional GitHub repo/branch override
@@ -62,7 +73,7 @@ Shiny application for exploring the [Evo-M1-Trait-Data](https://github.com/AleAl
 
 ## Data location
 
-TraitExplorer has **no local-repository dependency**. It never reads a checkout of Evo-M1-Trait-Data from disk; every table is fetched over HTTPS from `github.com/AleAliSousa/Evo-M1-Trait-Data` and cached under `TraitExplorer/.gh_cache/` (mirroring the repo's folder layout) purely for speed on repeat launches. Deleting `.gh_cache/` just means the next load re-downloads.
+The public trait and specimen views have **no local-repository dependency**. Their tables are fetched over HTTPS from `github.com/AleAliSousa/Evo-M1-Trait-Data` and cached under `TraitExplorer/.gh_cache/` (mirroring the repo's folder layout) purely for speed on repeat launches. Deleting `.gh_cache/` just means the next load re-downloads. The optional Neuron methods view reads a separate local restricted directory as described below.
 
 To point at a fork, a different branch, or a private mirror:
 
@@ -86,6 +97,17 @@ shiny::runApp("/path/to/TraitExplorer")
 
 The Start Here tab shows a "PREVIEWING LOCAL CHECKOUT" banner in this mode. The app still writes nothing into that folder. Unset the variable (or start a fresh R session) to go back to GitHub.
 
+## Local neuron-method comparison (optional)
+
+Set the separate restricted comparison directory before launching the app:
+
+```r
+Sys.setenv(TRAIT_NEURON_COMPARISON_DIR = "/path/to/restricted_checks/_cross_table/Collins_Young_vs_HerculanoHouzel_primate_regions/method_comparison")
+shiny::runApp("/path/to/TraitExplorer")
+```
+
+The directory must contain the three required CSVs named above, with their required headers and linked observation IDs. The individual and Charvet audit files are optional and are validated when present; an invalid focused audit file leaves the three core views available and prints a warning. The optional `sex_as_published`, `age_as_published`, `age_group`, `demographic_source_locus`, and `demographic_source_url` columns load when present; older directories display “Not reported” for missing demographics and use the neuron source URL as a demographic link only when a demographic value is reported. The age/sex link may point to a different paper than the neuron count source. Extra observation columns are retained for CSV export. An invalid required directory disables the tab and prints the validation reason at startup. Unset `TRAIT_NEURON_COMPARISON_DIR` and restart to restore the public-only interface. This variable is independent of `TRAIT_DATA_LOCAL_DIR`, which previews the public data checkout.
+
 ## Updating
 
 - **In-app**: click "Refresh data from GitHub" at the top of any tab. This re-lists the repo and re-downloads every file the app reads (crosswalks, the per-domain trait tables, specimen notes) -- a few dozen small requests, fast enough to run interactively.
@@ -104,7 +126,7 @@ source("run_app.R")
 
 ## Deploying to the web
 
-TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Because TraitExplorer reads its data straight from GitHub at runtime, deploying only ever uploads the app code (`app.R`, `data_layer.R`, `structure_reconcile.R`, `config.R`) -- a live TraitExplorer always sees current GitHub data with no redeploy needed for a pure data change.
+TraitExplorer has its own shinyapps.io app, separate from `evo-m1-brain-traits` (the Evo-M1-Trait-Data repo's app). Deployment uploads only app code (`app.R`, `data_layer.R`, `neuron_methods.R`, `structure_reconcile.R`, `config.R`). The restricted comparison CSVs remain outside this repository and are never uploaded. Without a local `TRAIT_NEURON_COMPARISON_DIR`, the deployed app has no Neuron methods tab. Public data still comes from GitHub at runtime, so a pure public-data change needs no redeploy.
 
 `__compiled/compiled_long.csv.gz` must be on the data repo's branch before a `data_layer.R` that reads it is deployed; otherwise the app stops at start-up.
 
