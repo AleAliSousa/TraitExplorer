@@ -550,8 +550,8 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
     Dataset = compiled$Dataset,
     stringsAsFactors = FALSE
   )
-  # Species names in the compiled table are already harmonised through
-  # _keys/species_display_aliases.csv by the builder.
+  # Species names in the compiled table are already harmonised by the builder
+  # (aliases and NCBI's homotypic synonyms; __compiled/species_names.csv).
   species_keys <- load_species_keys(force)
   combined_search_blob <- make_fast_search_blob(combined_df)
 
@@ -760,21 +760,28 @@ lookup_specimen_dossier <- function(canonical, note_text = "", published_taxon =
 # SPECIES NAME HARMONIZATION (shared keys)
 # --------------------------------------------------
 
-# Builds one lookup: printed/variant species string -> accepted_name, from
-# _keys/species_display_aliases.csv (variant -> canonical) plus the
-# specimen_taxon_resolution key. Everything not covered maps to itself.
-# Also returns the common-name table from _keys/species_cohorts.csv, used
-# only for display ("Mus musculus (House mouse)") -- never for joining.
+# Builds one lookup: printed/variant species string -> the name the data repository serves,
+# from __compiled/species_names.csv (written by the data repository's builder: the hand-kept
+# _keys/species_display_aliases.csv plus NCBI's homotypic synonyms, one name per NCBI taxon).
+# An older data repository without that file falls back to the aliases alone. Everything not
+# covered maps to itself. Also returns the common-name table from _keys/species_cohorts.csv,
+# used only for display ("Mus musculus (House mouse)") -- never for joining; its names are
+# mapped the same way so a renamed species keeps its common name.
 load_species_keys <- function(force = FALSE) {
+  served    <- read_gh_csv("__compiled/species_names.csv", force)
   aliases   <- read_gh_csv("_keys/species_display_aliases.csv", force)
   cohorts   <- read_gh_csv("_keys/species_cohorts.csv", force)
-  alias_map <- if (nrow(aliases) && all(c("variant", "canonical") %in% names(aliases))) {
+  alias_map <- if (nrow(served) && all(c("name", "served_as") %in% names(served))) {
+    stats::setNames(as.character(served$served_as), as.character(served$name))
+  } else if (nrow(aliases) && all(c("variant", "canonical") %in% names(aliases))) {
     stats::setNames(as.character(aliases$canonical), as.character(aliases$variant))
   } else character()
   common <- if (nrow(cohorts) && all(c("species_sci", "common_name") %in% names(cohorts))) {
     cohorts <- cohorts[!is.na(cohorts$species_sci) & !is.na(cohorts$common_name), ]
-    cohorts <- cohorts[!duplicated(cohorts$species_sci), ]
-    stats::setNames(as.character(cohorts$common_name), as.character(cohorts$species_sci))
+    sci <- as.character(cohorts$species_sci)
+    hit <- match(sci, names(alias_map)); sci[!is.na(hit)] <- unname(alias_map[hit[!is.na(hit)]])
+    keep <- !duplicated(sci)
+    stats::setNames(as.character(cohorts$common_name)[keep], sci[keep])
   } else character()
   list(alias_map = alias_map, common_names = common)
 }
