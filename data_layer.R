@@ -482,6 +482,56 @@ dataset_display <- function(x, labels) {
 # A category value as shown: a blank one is named, as in the Evo-M1 app.
 category_value <- function(x, blank) { x <- as.character(x); x[is.na(x) | !nzchar(x)] <- blank; x }
 
+# Region Comparison domains served from the one route of the data repo: the data
+# points (__compiled/datapoints.csv.gz, written by __compiled/build_compiled.R from
+# __compiled/item_columns.csv) replace the merge tables of these domains. One row per
+# report, species and label: the mean of the report's served points (as the table's
+# within-report rule); n is the sum of the printed n, else the number of points.
+ROUTE_REGION_DATASETS <- c(GLI = "Grey-level index", weights = "Brain-part weights",
+                           cortical_layers = "Cortical layer thickness")
+GLI_STRATA <- c("all_layers", "supragranular", "granular", "infragranular",
+                "layerII", "layerIII", "layerV", "layerVI")
+route_region_tables <- function(force = FALSE) {
+  p <- read_gh_csv("__compiled/datapoints.csv.gz", force)
+  need <- c("status", "dataset", "report", "species", "trait", "unit", "value", "n")
+  if (!nrow(p) || !all(need %in% names(p))) return(list())
+  p <- p[p$status %in% "served" & p$dataset %in% ROUTE_REGION_DATASETS, need]
+  if (!nrow(p)) return(list())
+  p$value <- suppressWarnings(as.numeric(p$value)); p$n <- suppressWarnings(as.numeric(p$n))
+  g <- split(p, paste(p$dataset, p$report, p$species, p$trait, sep = "\r"))
+  a <- do.call(rbind, lapply(g, function(x) data.frame(
+    dataset = x$dataset[1], Species = x$species[1], trait = x$trait[1], unit = x$unit[1],
+    source = x$report[1], value = mean(x$value, na.rm = TRUE),
+    n = if (all(is.na(x$n))) nrow(x) else sum(x$n, na.rm = TRUE), stringsAsFactors = FALSE)))
+  rownames(a) <- NULL
+  out <- list()
+  d <- a[a$dataset == ROUTE_REGION_DATASETS[["GLI"]], ]
+  if (nrow(d)) {
+    core <- sub(" \\([^)]*\\)$", "", sub("^GLI_", "", d$trait))
+    st <- vapply(core, function(k) { hit <- GLI_STRATA[endsWith(k, paste0("_", GLI_STRATA))]
+                                     if (length(hit)) hit[which.max(nchar(hit))] else NA_character_ }, character(1))
+    out$GLI <- data.frame(Species = d$Species, area_as_published = substr(core, 1, nchar(core) - nchar(st) - 1L),
+                          stratum = st, GLI_pct = d$value, source = d$source, n_specimens = d$n,
+                          stringsAsFactors = FALSE)[!is.na(st), ]
+  }
+  d <- a[a$dataset == ROUTE_REGION_DATASETS[["weights"]], ]
+  if (nrow(d)) out$weights <- data.frame(Species = d$Species, canonical_structure = sub("_Mass \\(g\\)$", "", d$trait),
+                                         mass_g = d$value, source = d$source, n = d$n, stringsAsFactors = FALSE)
+  d <- a[a$dataset == ROUTE_REGION_DATASETS[["cortical_layers"]], ]
+  if (nrow(d)) {
+    newborn <- grepl("_newborn", d$trait, fixed = TRUE)
+    region_of <- c(M1 = "primary motor cortex", V1 = "primary visual cortex", PFC = "prefrontal cortex",
+                   FrontalCortex = "frontal cortex", OccipitalCortex = "occipital cortex")
+    out$cortical_layers <- data.frame(Species = d$Species,
+      region = unname(region_of[sub("_Layer.*$", "", d$trait)]),
+      layer = sub("^[A-Za-z0-9]+_Layer(.+)_Thickness_.*$", "\\1", d$trait),
+      measure = paste0(ifelse(grepl("_Thickness_prop", d$trait), "proportional thickness", "absolute thickness"),
+                       ifelse(newborn, " (newborn)", "")),
+      value = d$value, unit = d$unit, source = d$source, n_specimens = d$n, stringsAsFactors = FALSE)
+  }
+  out
+}
+
 load_trait_data <- function(tree, compiled, force = FALSE) {
   # Trait Search and Species Coverage: the compiled table. Variables are found
   # and grouped by its two category columns, shown as "Domain" and
@@ -533,6 +583,11 @@ load_trait_data <- function(tree, compiled, force = FALSE) {
     if (nrow(d) == 0) next
     region_tables[[domain]] <- d
   }
+
+  # Domains whose merge folder was retired in favour of the one route (data repo
+  # steps 16-18) are rebuilt from the data points in the shape of the old merge table.
+  route_tables <- route_region_tables(force)
+  for (dm in names(route_tables)) if (is.null(region_tables[[dm]])) region_tables[[dm]] <- route_tables[[dm]]
 
   anatomy_keys <- load_anatomy_keys(force)
   region_tbl <- tryCatch(
