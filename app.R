@@ -60,7 +60,8 @@ source(file.path(app_dir, "neuron_methods.R"), local = TRUE)
 
 initial_data <- load_all_data()
 initial_neuron_methods <- load_neuron_methods()
-if (nzchar(Sys.getenv("TRAIT_NEURON_COMPARISON_DIR", unset = "")))
+if (nzchar(Sys.getenv("TRAIT_NEURON_COMPARISON_DIR", unset = "")) ||
+    dir.exists(nm_public_directory()))
   message(initial_neuron_methods$message)
 # Build picker choices column by column. Whole-cortex and V1 files may gain
 # different optional columns, so they need not have identical schemas.
@@ -575,6 +576,12 @@ ui <- fluidPage(
       "Neuron methods",
       value = "neuron_methods",
       br(),
+      div(class = "rule-box",
+          strong("Dataset: "), initial_neuron_methods$data_label,
+          if (identical(initial_neuron_methods$data_mode, "published_source_subset"))
+            " — reviewed published-source observations and labelled calculations; the full audit remains local."
+          else
+            " — local comparison audit, including rows outside the reviewed public subset."),
       sidebarLayout(
         sidebarPanel(
           radioButtons("nm_view", "View", choices = c(
@@ -872,7 +879,7 @@ server <- function(input, output, session) {
     d <- nm_visible_rows()
     if (!nrow(d)) return(data.frame(Message = "No observations match these filters."))
     if (identical(input$nm_view, "ratio")) {
-      data.frame(
+      table <- data.frame(
         Taxon = d$species,
         `Published numerator taxon` = d$other_species_as_published,
         `Published HH taxon` = d$hh_species_as_published,
@@ -895,8 +902,13 @@ server <- function(input, output, session) {
         `Shared specimen` = d$other_duplicate_group,
         check.names = FALSE
       )
+      if (all(c("release_basis", "derivation_note") %in% names(d))) {
+        table$`Ratio basis` <- d$release_basis
+        table$`Ratio derivation` <- d$derivation_note
+      }
+      table
     } else {
-      data.frame(
+      table <- data.frame(
         Taxon = d$species, `Published taxon` = d$species_as_published,
         Source = d$source, Specimen = d$specimen,
         Hemisphere = d$hemisphere_basis, Region = d$region,
@@ -914,6 +926,11 @@ server <- function(input, output, session) {
         `Shared specimen` = d$duplicate_group,
         check.names = FALSE
       )
+      if (all(c("release_basis", "derivation_note") %in% names(d))) {
+        table$`Neuron count basis` <- d$release_basis
+        table$`Count derivation` <- d$derivation_note
+      }
+      table
     }
   })
 
@@ -947,6 +964,10 @@ server <- function(input, output, session) {
       nm_detail_field("Age group", field("age_group")),
       nm_detail_field("Demographic source locus", field("demographic_source_locus")),
       nm_source_link(field("demographic_source_url"), "Open age/sex source"),
+      if (paste0(prefix, "release_basis") %in% names(row))
+        nm_detail_field("Neuron count basis", field("release_basis")),
+      if (paste0(prefix, "derivation_note") %in% names(row))
+        nm_detail_field("Count derivation", field("derivation_note")),
       if (field("age_years") != "Not reported") nm_detail_field("Age (years)", field("age_years")),
       if (field("neuron_ci95_halfwidth") != "Not reported")
         nm_detail_field("Neuron 95% CI half-width (neurons)", field("neuron_ci95_halfwidth")),
@@ -968,6 +989,10 @@ server <- function(input, output, session) {
         h4(paste0(row$species, ": ", signif(row$other_over_hh, 3), "× HH")),
         nm_detail_field("Taxon match", nm_detail_value(row, "taxon_match")),
         nm_detail_field("Interpretation", "Descriptive ratio across different specimens/cohorts and potentially different cortical boundaries. Compare the two paper-specific anatomical scope fields above and below."),
+        if ("release_basis" %in% names(row))
+          nm_detail_field("Ratio basis", nm_detail_value(row, "release_basis")),
+        if ("derivation_note" %in% names(row))
+          nm_detail_field("Ratio derivation", nm_detail_value(row, "derivation_note")),
         nm_paper_detail(row, "other_", "Comparison numerator"),
         hr(), nm_paper_detail(row, "hh_", "HH denominator")
       )

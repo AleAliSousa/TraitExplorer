@@ -1,6 +1,153 @@
-# Optional, local-only source-level neuron-method comparisons for TraitExplorer.
-# The CSVs are read directly from TRAIT_NEURON_COMPARISON_DIR. This module does
-# not use the GitHub data layer, its cache, or the public compiled feed.
+# Source-level neuron-method comparisons for TraitExplorer. A local restricted
+# directory takes precedence. A bundled public projection is read only after
+# its release manifest passes the approval, filename, and checksum gate.
+# Neither source uses the GitHub data layer, its cache, or the compiled feed.
+
+NM_PUBLIC_CSV_FILES <- c(
+  "whole_cortex_observations.csv", "v1_observations.csv",
+  "paired_relative_to_hh.csv", "whole_cortex_individual_observations.csv",
+  "v1_individual_observations.csv"
+)
+NM_PUBLIC_REQUIRED_FILES <- NM_PUBLIC_CSV_FILES[1:3]
+
+nm_public_directory <- function() {
+  root <- get0("app_dir", inherits = TRUE, ifnotfound = getwd())
+  file.path(root, "data", "neuron_methods_public")
+}
+
+nm_public_expected_columns <- function(filename) {
+  observation <- c(NM_OBSERVATION_COLUMNS, NM_DEMOGRAPHIC_COLUMNS,
+                   "release_basis", "derivation_note")
+  individual <- c(NM_OBSERVATION_COLUMNS, NM_DEMOGRAPHIC_COLUMNS,
+                  "sex", "age_years", "neuron_ci95_halfwidth",
+                  "release_basis", "derivation_note")
+  ratio <- c(NM_RATIO_COLUMNS, paste0("other_", NM_DEMOGRAPHIC_COLUMNS),
+             paste0("hh_", NM_DEMOGRAPHIC_COLUMNS),
+             "other_source_url", "other_source_locus",
+             "hh_source_url", "hh_source_locus",
+             "other_release_basis", "hh_release_basis",
+             "release_basis", "derivation_note")
+  switch(filename,
+         whole_cortex_observations.csv = observation,
+         v1_observations.csv = observation,
+         whole_cortex_individual_observations.csv = individual,
+         v1_individual_observations.csv = individual,
+         paired_relative_to_hh.csv = ratio)
+}
+
+nm_public_manifest_check <- function(directory = nm_public_directory()) {
+  fail <- function(reason) list(approved = FALSE, reason = reason, files = character())
+  if (!dir.exists(directory)) return(fail("No reviewed public neuron-method projection is installed."))
+  if (nzchar(Sys.readlink(directory))) return(fail("Public projection directory must not be a symbolic link."))
+  manifest_path <- file.path(directory, "manifest.json")
+  if (!file.exists(manifest_path)) return(fail("Public neuron-method projection has no approval manifest."))
+  if (nzchar(Sys.readlink(manifest_path))) return(fail("Approval manifest must be a regular file."))
+  if (!requireNamespace("jsonlite", quietly = TRUE) || !requireNamespace("digest", quietly = TRUE))
+    return(fail("Public projection verification requires jsonlite and digest."))
+  manifest <- tryCatch(jsonlite::fromJSON(manifest_path, simplifyVector = FALSE),
+                       error = function(e) NULL)
+  manifest_keys <- c("schema_version", "status", "reviewed_by", "reviewed_at", "files")
+  if (!is.list(manifest) || !setequal(names(manifest), manifest_keys) ||
+      anyDuplicated(names(manifest)))
+    return(fail("Approval manifest contains missing or unlisted fields."))
+  if (!is.list(manifest) || length(manifest$schema_version) != 1L ||
+      !identical(as.integer(manifest$schema_version), 1L))
+    return(fail("Approval manifest has an unsupported schema version."))
+  if (!identical(manifest$status, "APPROVED"))
+    return(fail("Public neuron-method projection is not approved for release."))
+  nonblank_scalar <- function(x) is.character(x) && length(x) == 1L &&
+    !is.na(x) && nzchar(trimws(x))
+  if (!nonblank_scalar(manifest$reviewed_by) || !nonblank_scalar(manifest$reviewed_at))
+    return(fail("Approved projection requires reviewer and review date."))
+  entries <- manifest$files
+  if (!is.list(entries) || !length(entries) || !all(vapply(entries, is.list, logical(1))))
+    return(fail("Approval manifest has no valid file list."))
+  file_keys <- c("filename", "sha256", "row_count")
+  if (any(!vapply(entries, function(x) setequal(names(x), file_keys) &&
+                  !anyDuplicated(names(x)), logical(1))))
+    return(fail("Approval manifest file entry contains missing or unlisted fields."))
+  filenames <- vapply(entries, function(x) if (nonblank_scalar(x$filename)) x$filename else "", character(1))
+  if (anyDuplicated(filenames) || any(!filenames %in% NM_PUBLIC_CSV_FILES) ||
+      !all(NM_PUBLIC_REQUIRED_FILES %in% filenames))
+    return(fail("Approval manifest filenames are missing, repeated, or outside the allowlist."))
+  present_files <- list.files(directory, all.files = TRUE, no.. = TRUE, full.names = FALSE)
+  if (!setequal(present_files, c("manifest.json", filenames)))
+    return(fail("Projection directory contains a missing or unlisted file."))
+  for (entry in entries) {
+    filename <- entry$filename
+    path <- file.path(directory, filename)
+    if (!file.exists(path) || nzchar(Sys.readlink(path)))
+      return(fail(paste0(filename, " is missing or is not a regular file.")))
+    expected <- entry$sha256
+    if (!nonblank_scalar(expected) || !grepl("^[0-9a-fA-F]{64}$", expected))
+      return(fail(paste0(filename, " has no valid SHA-256 in the manifest.")))
+    actual <- tryCatch(digest::digest(path, algo = "sha256", file = TRUE),
+                       error = function(e) "")
+    if (!identical(tolower(expected), tolower(actual)))
+      return(fail(paste0(filename, " differs from its approved SHA-256.")))
+    row_count <- entry$row_count
+    if (length(row_count) != 1L || is.na(row_count) ||
+        !is.numeric(row_count) || row_count < 0 || row_count != floor(row_count))
+      return(fail(paste0(filename, " has no valid row count in the manifest.")))
+    actual_rows <- tryCatch(nrow(utils::read.csv(path, stringsAsFactors = FALSE,
+                                                check.names = FALSE)), error = function(e) NA_integer_)
+    if (is.na(actual_rows) || actual_rows != row_count)
+      return(fail(paste0(filename, " differs from its approved row count.")))
+    actual_columns <- tryCatch(names(utils::read.csv(path, nrows = 0L,
+                                                    check.names = FALSE,
+                                                    fileEncoding = "UTF-8")),
+                               error = function(e) character())
+    expected_columns <- nm_public_expected_columns(filename)
+    if (anyDuplicated(actual_columns) || !setequal(actual_columns, expected_columns))
+      return(fail(paste0(filename, " has missing or unlisted public columns.")))
+  }
+  parsed <- nm_load_comparison_data(directory)
+  if (!isTRUE(parsed$enabled))
+    return(fail(paste0("Approved projection failed schema validation: ", parsed$reason)))
+  for (rows in list(parsed$whole, parsed$v1, parsed$pairs)) {
+    if (!nrow(rows)) next
+    if (!all(c("release_basis", "derivation_note") %in% names(rows)) ||
+        any(!nm_nonblank(rows$release_basis)) || any(!nm_nonblank(rows$derivation_note)))
+      return(fail("Every public row requires a neuron-count or ratio basis and derivation note."))
+  }
+  for (rows in list(parsed$whole, parsed$v1)) {
+    if (any(!rows$release_basis %in% c("source_reported", "derived_from_published")))
+      return(fail("Public observation has an unsupported neuron-count basis."))
+    if (any(nm_nonblank(rows$source_file)) || any(nm_nonblank(rows$notes)))
+      return(fail("Public observation contains internal source_file or notes text."))
+  }
+  ratio_path <- file.path(directory, "paired_relative_to_hh.csv")
+  ratio_raw <- utils::read.csv(ratio_path, stringsAsFactors = FALSE,
+                               check.names = FALSE, colClasses = "character",
+                               na.strings = character(0))
+  ratio_links <- c("other_source_url", "other_source_locus",
+                   "hh_source_url", "hh_source_locus")
+  if (!all(c("release_basis", "derivation_note", ratio_links) %in% names(ratio_raw)) ||
+      any(ratio_raw$release_basis != "derived_from_published") ||
+      any(!nm_nonblank(ratio_raw$derivation_note)) ||
+      any(!grepl("^https?://", ratio_raw$other_source_url)) ||
+      any(!grepl("^https?://", ratio_raw$hh_source_url)) ||
+      any(!nm_nonblank(ratio_raw$other_source_locus)) ||
+      any(!nm_nonblank(ratio_raw$hh_source_locus)))
+    return(fail("Public ratio rows require calculated basis and both primary-source links and loci."))
+  whole <- parsed$whole
+  other_idx <- match(ratio_raw$comparison_observation_id, whole$observation_id)
+  hh_idx <- match(ratio_raw$hh_observation_id, whole$observation_id)
+  if (anyNA(other_idx) || anyNA(hh_idx) ||
+      any(ratio_raw$other_source_url != whole$source_url[other_idx]) ||
+      any(ratio_raw$other_source_locus != whole$source_locus[other_idx]) ||
+      any(ratio_raw$hh_source_url != whole$source_url[hh_idx]) ||
+      any(ratio_raw$hh_source_locus != whole$source_locus[hh_idx]))
+    return(fail("Public ratio citations differ from referenced released observations."))
+  list(approved = TRUE, reason = "Approved projection verified.", files = filenames,
+       directory = normalizePath(directory, winslash = "/"))
+}
+
+nm_public_bundle_files <- function(directory = nm_public_directory()) {
+  check <- nm_public_manifest_check(directory)
+  if (!isTRUE(check$approved)) return(character())
+  file.path("data", "neuron_methods_public", c("manifest.json", check$files))
+}
 
 NM_OBSERVATION_COLUMNS <- c(
   "observation_id", "species", "species_as_published", "specimen", "source",
@@ -40,7 +187,8 @@ NM_CHARVET_HISTORY_COLUMNS <- c(
 nm_empty_comparison <- function(status = "disabled", message = "", directory = "") {
   list(
     enabled = FALSE, status = status, reason = message, message = message,
-    directory = directory, whole = data.frame(), v1 = data.frame(),
+    directory = directory, data_mode = "none", data_label = "",
+    whole = data.frame(), v1 = data.frame(),
     whole_individual = data.frame(), v1_individual = data.frame(),
     pairs = data.frame(), ratios = data.frame(), fig7 = data.frame(),
     history = data.frame(), charvet_enabled = FALSE, charvet_warning = ""
@@ -297,9 +445,27 @@ nm_load_comparison_data <- function(directory = Sys.getenv("TRAIT_NEURON_COMPARI
   }, error = function(e) nm_empty_comparison("invalid", paste0("Neuron methods could not load: ", conditionMessage(e)), directory))
 }
 
-# Stable integration API for app.R.
-load_neuron_methods <- function(path = Sys.getenv("TRAIT_NEURON_COMPARISON_DIR", unset = "")) {
-  nm_load_comparison_data(path)
+# Stable integration API for app.R. An explicit local directory always wins;
+# a rejected public candidate never falls back to the full restricted audit.
+load_neuron_methods <- function(path = Sys.getenv("TRAIT_NEURON_COMPARISON_DIR", unset = ""),
+                                public_directory = nm_public_directory()) {
+  if (length(path) && !is.na(path[1]) && nzchar(trimws(path[1]))) {
+    out <- nm_load_comparison_data(path)
+    out$data_mode <- "full_local_audit"
+    out$data_label <- "Full local audit"
+    return(out)
+  }
+  if (!dir.exists(public_directory))
+    return(nm_empty_comparison("disabled", "No approved public neuron-method projection is installed."))
+  check <- nm_public_manifest_check(public_directory)
+  if (!isTRUE(check$approved))
+    return(nm_empty_comparison("invalid", check$reason, public_directory))
+  out <- nm_load_comparison_data(public_directory)
+  if (!isTRUE(out$enabled)) return(out)
+  out$data_mode <- "published_source_subset"
+  out$data_label <- "Published-source subset"
+  out$message <- paste(out$message, "Approved public projection verified against manifest.")
+  out
 }
 
 nm_match_filter <- function(x, selected) {
@@ -466,6 +632,8 @@ nm_observation_hover <- function(x) {
       nm_hover_line("Age group", nm_demographic_display(r$age_group)),
       nm_hover_line("Demographic source locus", nm_demographic_display(r$demographic_source_locus)),
       nm_hover_line("Demographic source URL", nm_demographic_display(r$demographic_source_url)),
+      if ("release_basis" %in% names(r)) nm_hover_line("Neuron count basis", r$release_basis),
+      if ("derivation_note" %in% names(r)) nm_hover_line("Count derivation", r$derivation_note),
       if ("age_years" %in% names(r) && nm_nonblank(r$age_years)) nm_hover_line("Age (years)", r$age_years),
       if ("neuron_ci95_halfwidth" %in% names(r) && nm_nonblank(r$neuron_ci95_halfwidth))
         nm_hover_line("Neuron 95% CI half-width (neurons)", r$neuron_ci95_halfwidth),
@@ -487,6 +655,8 @@ nm_ratio_hover <- function(x) {
       paste0("<b>", nm_hover_value(r$species), "</b> — other / HH = ",
              format(round(r$other_over_hh, 3), nsmall = 3), " (between cohorts)"),
       nm_hover_line("Taxon match", r$taxon_match),
+      if ("release_basis" %in% names(r)) nm_hover_line("Ratio basis", r$release_basis),
+      if ("derivation_note" %in% names(r)) nm_hover_line("Ratio derivation", r$derivation_note),
       nm_hover_line("Other source", paste(r$other_source, r$other_source_locus, sep = ", ")),
       nm_hover_line("Other published taxon", r$other_species_as_published),
       nm_hover_line("Other specimen", r$other_specimen),

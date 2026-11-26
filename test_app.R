@@ -14,12 +14,144 @@ if (is.na(app_dir) || !file.exists(file.path(app_dir, "app.R"))) app_dir <- getw
 setwd(app_dir)
 env <- new.env(); suppressMessages(sys.source("app.R", envir = env))
 
-# The local comparison is opt-in and its schema is validated before any row
-# reaches a plot. These checks do not touch the public data cache.
-nm_off <- env$load_neuron_methods("")
+# A candidate public projection is off until its manifest is explicitly
+# approved and all listed files match their hashes and row counts.
+nm_off <- env$load_neuron_methods("", public_directory = tempfile("nm_absent_"))
 stopifnot(!nm_off$enabled, identical(nm_off$status, "disabled"))
 cat(sprintf("[%s] neuron methods default-off=%s\n", label, !nm_off$enabled))
-if (isTRUE(env$initial_neuron_methods$enabled)) {
+nm_public_test <- tempfile("nm_public_manifest_test_")
+dir.create(nm_public_test)
+make_nm_observation <- function(id, source, region, neurons) {
+  fields <- stats::setNames(as.list(rep("", length(env$NM_OBSERVATION_COLUMNS))),
+                            env$NM_OBSERVATION_COLUMNS)
+  fields$observation_id <- id; fields$species <- "Synthetic species"
+  fields$species_as_published <- "Synthetic species"
+  fields$specimen <- id; fields$source <- source; fields$year <- "2026"
+  fields$lab_method <- "Synthetic method"; fields$method <- "Synthetic method"
+  fields$region <- region; fields$scope <- "Synthetic tissue"
+  fields$hemisphere_basis <- "one hemisphere"; fields$hemisphere <- "left"
+  fields$n_individuals <- "1"; fields$neurons <- as.character(neurons)
+  fields$condition <- "normal"; fields$plot_role <- "primary"
+  fields$source_url <- "https://example.org/synthetic-fixture"
+  fields$source_locus <- "Synthetic test fixture"
+  for (column in env$NM_DEMOGRAPHIC_COLUMNS) fields[[column]] <- ""
+  fields$release_basis <- "derived_from_published"
+  fields$derivation_note <- "Synthetic test only"
+  as.data.frame(fields, stringsAsFactors = FALSE, check.names = FALSE)
+}
+write.csv(rbind(make_nm_observation("synthetic_other", "Synthetic other", "cerebral cortex", 120),
+                make_nm_observation("synthetic_hh", "Synthetic HH", "cerebral cortex", 100)),
+          file.path(nm_public_test, "whole_cortex_observations.csv"), row.names = FALSE, na = "")
+write.csv(make_nm_observation("synthetic_v1", "Synthetic V1", "V1", 25),
+          file.path(nm_public_test, "v1_observations.csv"), row.names = FALSE, na = "")
+ratio_fixture <- data.frame(species = "Synthetic species",
+                     comparison_observation_id = "synthetic_other",
+                     hh_observation_id = "synthetic_hh",
+                     other_lab_method = "Synthetic method", other_neurons = 120,
+                     hh_neurons = 100, other_over_hh = 1.2,
+                     taxon_match = "same reported species", specimen = "",
+                     quality_flag = "", release_basis = "derived_from_published",
+                     derivation_note = "Calculated between synthetic cohorts",
+                     other_source_url = "https://example.org/synthetic-fixture",
+                     other_source_locus = "Synthetic test fixture",
+                     hh_source_url = "https://example.org/synthetic-fixture",
+                     hh_source_locus = "Synthetic test fixture",
+                     other_release_basis = "derived_from_published",
+                     hh_release_basis = "derived_from_published")
+for (side in c("other", "hh"))
+  for (column in env$NM_DEMOGRAPHIC_COLUMNS)
+    ratio_fixture[[paste0(side, "_", column)]] <- ""
+write.csv(ratio_fixture, file.path(nm_public_test, "paired_relative_to_hh.csv"),
+          row.names = FALSE, na = "")
+fixture_files <- env$NM_PUBLIC_REQUIRED_FILES
+fixture_manifest <- list(
+  schema_version = 1L, status = "NOT_APPROVED", reviewed_by = "", reviewed_at = "",
+  files = lapply(fixture_files, function(filename) {
+    path <- file.path(nm_public_test, filename)
+    list(filename = filename, sha256 = digest::digest(path, algo = "sha256", file = TRUE),
+         row_count = nrow(read.csv(path, check.names = FALSE)))
+  })
+)
+fixture_manifest_path <- file.path(nm_public_test, "manifest.json")
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+candidate <- env$load_neuron_methods("", public_directory = nm_public_test)
+stopifnot(!candidate$enabled, grepl("not approved", candidate$reason, fixed = TRUE),
+          !env$nm_public_manifest_check(nm_public_test)$approved)
+fixture_manifest$status <- "APPROVED"
+fixture_manifest$reviewed_by <- "synthetic test reviewer"
+fixture_manifest$reviewed_at <- "2026-01-01"
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+public_fixture <- env$load_neuron_methods("", public_directory = nm_public_test)
+invalid_local <- env$load_neuron_methods(file.path(nm_public_test, "missing_local_audit"),
+                                          public_directory = nm_public_test)
+stopifnot(public_fixture$enabled,
+          identical(public_fixture$data_mode, "published_source_subset"),
+          nrow(public_fixture$whole) == 2L, nrow(public_fixture$v1) == 1L,
+          nrow(public_fixture$pairs) == 1L,
+          "release_basis" %in% names(public_fixture$whole),
+          "derivation_note" %in% names(public_fixture$pairs),
+          grepl("Neuron count basis", env$nm_observation_hover(public_fixture$whole)[1], fixed = TRUE),
+          grepl("Calculated between synthetic cohorts",
+                env$nm_ratio_hover(public_fixture$pairs)[1], fixed = TRUE),
+          length(env$nm_public_bundle_files(nm_public_test)) == 4L,
+          !invalid_local$enabled, identical(invalid_local$status, "invalid"),
+          grepl("does not exist", invalid_local$reason, fixed = TRUE))
+original_neuron_methods <- env$initial_neuron_methods
+env$initial_neuron_methods <- public_fixture
+testServer(env$server, {
+  session$setInputs(nm_view = "whole", nm_roles = "primary", nm_quality = "all")
+  stopifnot(all(c("Neuron count basis", "Count derivation") %in% names(nm_table_data())))
+  session$setInputs(nm_view = "ratio")
+  stopifnot(all(c("Ratio basis", "Ratio derivation") %in% names(nm_table_data())))
+})
+env$initial_neuron_methods <- original_neuron_methods
+fixture_manifest$review_payload <- "synthetic restricted metadata"
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+bad_manifest_key <- env$nm_public_manifest_check(nm_public_test)
+stopifnot(!bad_manifest_key$approved,
+          grepl("unlisted fields", bad_manifest_key$reason, fixed = TRUE))
+fixture_manifest$review_payload <- NULL
+fixture_manifest$files[[1]]$private_note <- "synthetic restricted metadata"
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+bad_entry_key <- env$nm_public_manifest_check(nm_public_test)
+stopifnot(!bad_entry_key$approved,
+          grepl("unlisted fields", bad_entry_key$reason, fixed = TRUE))
+fixture_manifest$files[[1]]$private_note <- NULL
+v1_fixture_path <- file.path(nm_public_test, "v1_observations.csv")
+v1_fixture <- read.csv(v1_fixture_path, stringsAsFactors = FALSE, check.names = FALSE)
+v1_fixture$private_note <- "synthetic field that must not ship"
+write.csv(v1_fixture, v1_fixture_path, row.names = FALSE, na = "")
+fixture_manifest$files[[2]]$sha256 <- digest::digest(v1_fixture_path, algo = "sha256", file = TRUE)
+fixture_manifest$files[[2]]$row_count <- nrow(v1_fixture)
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+bad_public_column <- env$nm_public_manifest_check(nm_public_test)
+stopifnot(!bad_public_column$approved,
+          grepl("unlisted public columns", bad_public_column$reason, fixed = TRUE))
+v1_fixture$private_note <- NULL
+write.csv(v1_fixture, v1_fixture_path, row.names = FALSE, na = "")
+fixture_manifest$files[[2]]$sha256 <- digest::digest(v1_fixture_path, algo = "sha256", file = TRUE)
+jsonlite::write_json(fixture_manifest, fixture_manifest_path, auto_unbox = TRUE, pretty = TRUE)
+stopifnot(env$nm_public_manifest_check(nm_public_test)$approved)
+writeLines("extra staging file", file.path(nm_public_test, "review_manifest.json"))
+unlisted_file <- env$nm_public_manifest_check(nm_public_test)
+stopifnot(!unlisted_file$approved, grepl("unlisted file", unlisted_file$reason, fixed = TRUE))
+unlink(file.path(nm_public_test, "review_manifest.json"))
+write("", file.path(nm_public_test, "v1_observations.csv"), append = TRUE)
+bad_hash <- env$load_neuron_methods("", public_directory = nm_public_test)
+local_override <- env$load_neuron_methods(nm_public_test, public_directory = nm_public_test)
+stopifnot(!bad_hash$enabled, grepl("SHA-256", bad_hash$reason, fixed = TRUE),
+          local_override$enabled, identical(local_override$data_mode, "full_local_audit"),
+          !length(env$nm_public_bundle_files(nm_public_test)))
+unlink(nm_public_test, recursive = TRUE)
+cat(sprintf("[%s] public candidate blocked; approved fixture loaded; UI provenance columns rendered; invalid local path, extra manifest fields, private CSV column, and extra file failed closed; hash mismatch blocked; local override loaded\n", label))
+if (isTRUE(env$initial_neuron_methods$enabled) &&
+    identical(env$initial_neuron_methods$data_mode, "published_source_subset")) {
+  stopifnot(nrow(env$initial_neuron_methods$whole) > 0,
+            nrow(env$initial_neuron_methods$v1) > 0,
+            nrow(env$initial_neuron_methods$pairs) > 0)
+}
+if (isTRUE(env$initial_neuron_methods$enabled) &&
+    identical(env$initial_neuron_methods$data_mode, "full_local_audit")) {
   nm <- env$initial_neuron_methods
   stopifnot(nrow(nm$whole) > 0, nrow(nm$v1) > 0, nrow(nm$pairs) > 0)
   stopifnot(all(env$NM_DEMOGRAPHIC_COLUMNS %in% names(nm$whole)),
